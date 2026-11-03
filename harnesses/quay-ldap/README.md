@@ -44,7 +44,8 @@ cd harnesses/quay-ldap
 cp .env.example .env          # optional; edit to taste
 
 # Pull mode (default): test a published image containing the fix.
-# The gate was last validated against: <record tag here on first run>
+# The gate was last validated against: no published tag yet (2026-11-03;
+# source mode against the fix branch is the reference run below).
 QUAY_IMAGE=quay.io/projectquay/quay:<tag> ./run.sh up
 ./run.sh verify
 
@@ -136,6 +137,16 @@ The browser suite is compose-only. Status: **statically validated**
 verify Job finds no Quay pods, set `QUAY_POD_LABEL` (operator label
 conventions vary), and if the 389 DS pod crash-loops under the restricted
 SCC, see the note in `ocp/idp/389ds.yaml`.
+
+## Validation status
+
+- Source mode (2026-11-03, quay @ `b861d36cf` on
+  `fix/projquay-13372-redact-ldap-passwords`): `build && up && verify`
+  — gate 11/11 PASS; Playwright `@auth:LDAP` 7/7 passed.
+- Pull mode: stack boots and verify runs; the redaction gate fails on
+  images predating the fix, as it should.
+- OpenShift variant: statically validated only (see above).
+- Also probed: `DOCKER=podman ./run.sh doctor`.
 
 ## Provenance
 

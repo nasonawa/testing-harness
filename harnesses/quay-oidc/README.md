@@ -141,6 +141,14 @@ The browser suite is compose-only. Status: **statically validated**
 verify Job finds no Quay pods, set `QUAY_POD_LABEL` (operator label
 conventions vary).
 
+## Validation status
+
+- Source mode (2026-11-03, quay @ `b861d36cf` on
+  `fix/projquay-13372-redact-ldap-passwords`): `build && up && verify`
+  — 5/5 PASS; Playwright `@auth:OIDC` smoke 19/19 passed.
+- Pull mode: not yet run end-to-end.
+- OpenShift variant: statically validated only (see above).
+
 ## Provenance
 
 Ported from `quay/quay` `.cursor/oidc-testing/` (Apache-2.0); the host-side
