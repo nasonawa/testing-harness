@@ -161,7 +161,13 @@ def sh(cmd: list[str], *, check: bool = True, **kw) -> subprocess.CompletedProce
 
 
 def try_run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, **kw)
+    try:
+        return subprocess.run([str(c) for c in cmd], capture_output=True, text=True, **kw)
+    except FileNotFoundError:
+        # Binary not installed (e.g. no docker on an OCP-only host): report a
+        # plain failure so callers' fallbacks apply instead of crashing.
+        return subprocess.CompletedProcess([str(c) for c in cmd], returncode=127,
+                                           stdout="", stderr=f"{cmd[0]}: not found")
 
 
 def http_ok(url: str, timeout: float = 5) -> bool:
@@ -908,6 +914,10 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
            "--ignore-not-found")
         return 0
 
+    if sub == "help":
+        print("ocp render|apply|verify|logs|delete")
+        return 0
+
     print(f"Unknown ocp subcommand: {sub}\n\nocp render|apply|verify|logs|delete")
     return 2
 
@@ -923,10 +933,12 @@ def main() -> int:
     ns = parser.parse_args()
 
     cfg = load_config()
-    cfg["DOCKER_USER"] = detect_docker_user(cfg)
-    export_env(cfg)
-
     cmd, args = ns.command, ns.args
+    # `ocp` runs on hosts with no container runtime at all — skip the docker
+    # probe (a missing docker binary must not break cluster subcommands).
+    if cmd != "ocp":
+        cfg["DOCKER_USER"] = detect_docker_user(cfg)
+    export_env(cfg)
     if cmd in ("help", "-h", "--help"):
         print(USAGE)
         return 0
