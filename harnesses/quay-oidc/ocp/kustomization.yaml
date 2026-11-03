@@ -1,16 +1,25 @@
 # OpenShift variant of the OIDC harness (operator-installed Quay).
 #
-# Fully self-contained: a bare `oc apply -k ocp/` from a fresh clone deploys
-# the namespace, Keycloak (+ realm), the config bundle and the QuayRegistry
-# (OIDC + local storage). `./run.sh ocp apply|verify` wraps the same
-# kustomization with waiting/reporting; `ocp verify` additionally applies
-# the per-run verify Job and its generated ConfigMaps (ocp/generated/,
-# gitignored).
+# TWO MODES:
+#  * bare `oc apply -k ocp/` (this kustomization, as-is): fully
+#    self-contained from a fresh clone — namespace, Keycloak (+ realm,
+#    in-cluster service issuer, ingress disabled), config bundle,
+#    QuayRegistry (OIDC + local storage). API verification only; browser
+#    login through Quay's UI does NOT work in this mode (the OIDC issuer
+#    is cluster-internal DNS).
+#  * `./run.sh ocp apply` (route mode): applies the IdP first, patches the
+#    Keycloak CR so the operator assigns its default public Route hostname
+#    (quay-keycloak-ingress-<namespace>.<appsDomain>), then renders the
+#    config bundle and realm import with that hostname and the Quay Route
+#    callback — browser login works. `ocp verify` and `ocp delete` work in
+#    both modes.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - namespace.yaml
-  - idp/
+  - idp/keycloak-db.yaml
+  - idp/keycloak.yaml
+  - idp/quay-oidc-realm.yaml
   - config-bundle.yaml
   - quayregistry.yaml
   - rbac.yaml

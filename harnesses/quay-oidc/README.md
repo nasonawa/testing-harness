@@ -129,10 +129,30 @@ point at the in-cluster Keycloak service, and a verify Job running **the
 same `verify.py`** (health, discovery-issuer match, no-secrets-in-logs)
 with `--log-source ocp`.
 
-The kustomization is **self-contained**: a bare `oc apply -k ocp/` from a
-fresh clone deploys the whole stack (Keycloak + realm, Quay with OIDC and
-local storage) with no run.py step. `./run.sh ocp …` wraps the same
-kustomization with waiting, verify and reporting.
+Two apply modes:
+
+- **Static / bare** — `oc apply -k ocp/` from a fresh clone deploys the
+  whole stack (Keycloak + realm, Quay with OIDC and local storage) with
+  no run.py step. The OIDC issuer is the in-cluster
+  `quay-keycloak-service` DNS name, so this mode supports **API
+  verification only** (`./run.sh ocp verify`); browser login through
+  Quay's UI does not work (the browser would be redirected to
+  cluster-internal DNS).
+- **Route mode** — `./run.sh ocp apply` additionally patches the Keycloak
+  CR so the RHBK operator assigns its default public Route hostname
+  (`quay-keycloak-ingress-<namespace>.<appsDomain>`), rewrites Quay's
+  config bundle to that issuer, and imports the realm with the Quay
+  Route callback in the `quay-ui` client's redirect URIs — **browser
+  login works** (users `admin_oidc`/`testuser_oidc`/`readonly_oidc`/
+  `sync_oidc`, password `password`). Switching from static to route mode
+  on an existing deployment requires `./run.sh ocp delete` first: the
+  operator only imports realms that do not exist yet.
+
+Validated against the **Red Hat build of Keycloak 26.0** operator: the CRs
+use `k8s.keycloak.org/v2alpha1` (served by every RHBK generation — 24.0
+and 26.0 natively, newer serve it deprecated) and avoid `spec.http.serviceName`
+(newer-than-26.0 only), so the operator's Service is always
+`quay-keycloak-service`.
 
 Prerequisites: the **quay-operator** and the **Red Hat build of Keycloak
 operator** installed via OLM, `oc` logged in. Keycloak notes: the

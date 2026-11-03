@@ -28,7 +28,7 @@ stringData:
 
     SOMEOIDC_LOGIN_CONFIG:
       SERVICE_NAME: "Keycloak"
-      OIDC_SERVER: "http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080/realms/quay/"
+      OIDC_SERVER: "http://quay-keycloak-service.quay-oidc-harness.svc.cluster.local:8080/realms/quay/"
       CLIENT_ID: "quay-ui"
       # Quay's config validation requires CLIENT_SECRET even for public clients
       # (PUBLIC_CLIENT: true omits it from token requests; the Keycloak client
@@ -46,7 +46,7 @@ stringData:
       PKCE_METHOD: "S256"
       PUBLIC_CLIENT: true
       OIDC_ISSUERS:
-        - "http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080/realms/quay"
+        - "http://quay-keycloak-service.quay-oidc-harness.svc.cluster.local:8080/realms/quay"
       OIDC_AUDIENCES:
         - "quay-ui"
         - "api://quay-api"

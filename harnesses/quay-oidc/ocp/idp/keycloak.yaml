@@ -1,5 +1,11 @@
 # Keycloak (identity provider for the OIDC harness) on OpenShift, deployed by
 # the "Red Hat build of Keycloak" operator (RHBK, install it via OLM first).
+# Validated against RHBK 26.0: apiVersion v2alpha1 (served by every RHBK
+# generation — 24.0 and 26.0 natively, newer ones serve it deprecated), KC 26
+# hostname v2 (hostname accepts a full URL), KeycloakRealmImport with
+# keycloakCRName. Note: spec.http.serviceName exists only on operators NEWER
+# than 26.0 — do not use it; the Service is always <cr-name>-service, hence
+# the quay-keycloak-service URLs in the config bundle.
 #
 # The operator requires a database: the dev-only ephemeral Postgres next to
 # this file (keycloak-db.yaml) provides one. The initial admin credentials
@@ -7,16 +13,26 @@
 # `quay-keycloak-initial-admin` (the harness never needs them: the realm is
 # imported via KeycloakRealmImport and verification is API-only).
 #
-# spec.http.serviceName pins the operator-created Service to `quay-keycloak`
-# so the OIDC issuer stays http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080
+# The hostname is pinned to the operator-created Service so the OIDC issuer
+# is http://quay-keycloak-service.quay-oidc-harness.svc.cluster.local:8080
 # — the exact URL Quay's config bundle and run.py's params reference.
-# hostname.hostname embeds the same URL (KC hostname v2 accepts full URLs)
-# and backchannelDynamic matches the compose stack's
+# backchannelDynamic matches the compose stack's
 # KC_HOSTNAME_BACKCHANNEL_DYNAMIC so the discovery issuer matches.
+#
+# TWO MODES:
+#  * bare `oc apply -k ocp/` (this file as-is): ingress DISABLED — no Route,
+#    in-cluster service issuer, API verification only (browser login through
+#    Quay's UI cannot work: the browser would be redirected to cluster DNS).
+#  * `./run.sh ocp apply` (route mode): run.py patches this CR to clear
+#    hostname and enable ingress with className=openshift-default. The
+#    operator then assigns its default public hostname
+#    quay-keycloak-ingress-quay-oidc-harness.<appsDomain> (edge Route) and
+#    run.py rewrites Quay's config bundle + realm redirect URIs to use it —
+#    browser login works.
 #
 # Dev-only fixture credentials (keycloak/keycloak DB): intentional, see the
 # repo AGENTS.md security note.
-apiVersion: k8s.keycloak.org/v2beta1
+apiVersion: k8s.keycloak.org/v2alpha1
 kind: Keycloak
 metadata:
   name: quay-keycloak
@@ -41,7 +57,8 @@ spec:
       key: password
   http:
     httpEnabled: true
-    serviceName: quay-keycloak
+  ingress:
+    enabled: false
   hostname:
-    hostname: http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080
+    hostname: http://quay-keycloak-service.quay-oidc-harness.svc.cluster.local:8080
     backchannelDynamic: true

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import pathlib
 import re
@@ -607,7 +608,20 @@ REALM_IMPORT_HEADER = [
 ]
 
 
-def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> None:
+def keycloak_internal_base(cfg: dict) -> str:
+    """In-cluster Keycloak service base URL (bare `oc apply -k ocp/` mode).
+
+    The RHBK operator always names its Service <cr-name>-service.
+    """
+    return f"http://quay-keycloak-service.{cfg['OCP_NAMESPACE']}.svc.cluster.local:8080"
+
+
+def keycloak_cr_name() -> str:
+    return "quay-keycloak"
+
+
+def write_generated_manifests(cfg: dict, quay_base_url: str | None = None,
+                              keycloak_url: str | None = None) -> None:
     """Materialize the OCP manifests that embed harness sources.
 
     Kustomize's load restrictor forbids referencing files above ocp/, so the
@@ -642,7 +656,7 @@ def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> No
     realm_src = (HARNESS_DIR / "keycloak" / "quay-realm.json").read_text()
     realm_path = OCP_DIR / "idp" / "quay-oidc-realm.yaml"
     realm_lines = [*REALM_IMPORT_HEADER,
-                   "apiVersion: k8s.keycloak.org/v2beta1",
+                   "apiVersion: k8s.keycloak.org/v2alpha1",
                    "kind: KeycloakRealmImport",
                    "metadata:",
                    "  name: quay-oidc-realm",
@@ -660,8 +674,8 @@ def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> No
         "QUAY_BASE_URL": quay_base_url or "",
         "K8S_NAMESPACE": cfg["OCP_NAMESPACE"],
         "QUAY_POD_LABEL": cfg["QUAY_POD_LABEL"],
-        "KEYCLOAK_ISSUER": f"http://quay-keycloak.{cfg['OCP_NAMESPACE']}.svc.cluster.local:8080/realms/quay",
-        "KEYCLOAK_URL": f"http://quay-keycloak.{cfg['OCP_NAMESPACE']}.svc.cluster.local:8080/realms/quay",
+        "KEYCLOAK_ISSUER": keycloak_url or f"{keycloak_internal_base(cfg)}/realms/quay",
+        "KEYCLOAK_URL": keycloak_url or f"{keycloak_internal_base(cfg)}/realms/quay",
     }, namespace=cfg["OCP_NAMESPACE"])
 
 
@@ -671,6 +685,82 @@ def render_kustomize(cfg: dict) -> str:
     if proc.returncode != 0:
         sys.exit(f"ERROR: oc kustomize failed:\n{proc.stderr}")
     return proc.stdout
+
+
+def keycloak_route_host(cfg: dict) -> str | None:
+    """The operator-assigned public hostname of the Keycloak CR, if any.
+
+    The RHBK operator writes `<cr>-ingress-<namespace>.<appsDomain>` back
+    into spec.hostname.hostname when ingress is enabled with
+    className=openshift-default and no explicit hostname — see
+    KeycloakController.generateOpenshiftHostname. Absent in the bare
+    `oc apply -k ocp/` mode (in-cluster service issuer).
+    """
+    proc = oc_quiet(cfg, "get", "keycloak", keycloak_cr_name(), "-o",
+                    "jsonpath={.spec.hostname.hostname}")
+    return proc.stdout.strip() or None if proc.returncode == 0 else None
+
+
+def wait_for_keycloak(cfg: dict, want_hostname: bool) -> None:
+    """Wait for the Keycloak CR: operator-assigned hostname (if wanted) and
+    the Ready condition."""
+    if want_hostname:
+        print("Waiting for the Keycloak operator to assign the Route hostname ...")
+        deadline = time.time() + 5 * 60
+        host = None
+        while time.time() < deadline:
+            host = keycloak_route_host(cfg)
+            if host:
+                break
+            time.sleep(10)
+        if not host:
+            sys.exit("ERROR: the Keycloak operator did not assign a Route hostname "
+                     "(check the RHBK operator and `oc get keycloak quay-keycloak -o yaml`).")
+    print("Waiting for Keycloak to become Ready (~1-2 min after a hostname change) ...")
+    deadline = time.time() + 10 * 60
+    while time.time() < deadline:
+        proc = oc_quiet(cfg, "get", "keycloak", keycloak_cr_name(), "-o",
+                        "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+        if proc.stdout.strip() == "True":
+            print("Keycloak is Ready.")
+            return
+        time.sleep(15)
+    sys.exit("ERROR: Keycloak did not become Ready. "
+             "Check: oc -n quay-oidc-harness get keycloak quay-keycloak -o yaml")
+
+
+def render_route_realm_import(cfg: dict, quay_base: str) -> pathlib.Path:
+    """Route-mode KeycloakRealmImport: the tracked realm plus the Quay Route
+    callback in the quay-ui client's redirect URIs (browser login).
+
+    Written to ocp/generated/ (gitignored) under the SAME CR name as the
+    tracked ocp/idp/quay-oidc-realm.yaml, so `ocp delete` cleans it up.
+    Note the operator only imports realms that do not exist yet: re-running
+    against a Keycloak that already has the realm is a no-op.
+    """
+    realm = json.loads((HARNESS_DIR / "keycloak" / "quay-realm.json").read_text())
+    for client in realm.get("clients", []):
+        if client.get("clientId") == "quay-ui":
+            uris = client.setdefault("redirectUris", [])
+            for uri in (f"{quay_base}/*", f"{quay_base}/oauth2/someoidc/callback*"):
+                if uri not in uris:
+                    uris.append(uri)
+    lines = ["# Route-mode KeycloakRealmImport, generated by `ocp apply`: the",
+             "# tracked realm (ocp/idp/quay-oidc-realm.yaml) plus the Quay",
+             "# Route callback URIs for browser login. Gitignored.",
+             "apiVersion: k8s.keycloak.org/v2alpha1",
+             "kind: KeycloakRealmImport",
+             "metadata:",
+             "  name: quay-oidc-realm",
+             f"  namespace: {cfg['OCP_NAMESPACE']}",
+             "spec:",
+             f"  keycloakCRName: {keycloak_cr_name()}",
+             "  realm:"]
+    body = json.dumps(realm, indent=2)
+    lines.extend(f"    {ln}" if ln else "" for ln in body.splitlines())
+    path = OCP_GENERATED_DIR / "quay-oidc-realm.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def cmd_ocp(cfg: dict, args: list[str]) -> int:
@@ -683,9 +773,41 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
         return 0
 
     if sub == "apply":
-        write_generated_manifests(cfg)
-        oc(cfg, "apply", "-k", str(OCP_DIR))
         name = cfg["OCP_QUAYREGISTRY_NAME"]
+        # Phase 1: namespace + Keycloak (+ its Postgres), tracked manifests.
+        # (The realm import is deliberately NOT applied here: the route-mode
+        # copy below carries the Quay Route callback URIs.)
+        oc(cfg, "apply", "-f", str(OCP_DIR / "namespace.yaml"))
+        oc(cfg, "apply", "-f", str(OCP_DIR / "idp" / "keycloak-db.yaml"))
+        oc(cfg, "apply", "-f", str(OCP_DIR / "idp" / "keycloak.yaml"))
+
+        # Phase 2: switch Keycloak to route mode — clear the pinned
+        # in-cluster hostname and enable the operator's OpenShift ingress.
+        # The operator then writes its default public hostname
+        # (<name>-ingress-<namespace>.<appsDomain>, edge Route) into the CR
+        # and rolls the StatefulSet.
+        patch = json.dumps({"spec": {
+            "hostname": None,
+            "ingress": {"enabled": True, "className": "openshift-default"},
+        }})
+        oc(cfg, "patch", "keycloak", keycloak_cr_name(),
+           "--type", "merge", "-p", patch)
+        wait_for_keycloak(cfg, want_hostname=True)
+        kc_base = f"https://{keycloak_route_host(cfg)}"
+        print(f"Keycloak Route: {kc_base}")
+
+        # Phase 3: config bundle with the public issuer + QuayRegistry + RBAC.
+        write_generated_manifests(cfg)
+        bundle = (OCP_DIR / "config-bundle.yaml").read_text()
+        bundle = bundle.replace(keycloak_internal_base(cfg), kc_base)
+        bundle_path = OCP_GENERATED_DIR / "quay-config-bundle-oidc.yaml"
+        bundle_path.write_text(bundle)
+        oc(cfg, "apply", "-f", str(bundle_path))
+        oc(cfg, "apply", "-f", str(OCP_DIR / "quayregistry.yaml"))
+        oc(cfg, "apply", "-f", str(OCP_DIR / "rbac.yaml"))
+
+        # Phase 4: wait for Quay, then import the realm with the Quay
+        # callback (only creates the realm if it does not exist yet).
         print(f"Waiting for QuayRegistry {name} to become Available "
               f"(the operator deploys managed components; ~10-15 min) ...")
         deadline = time.time() + 15 * 60
@@ -696,8 +818,15 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
                 print("QuayRegistry is Available.")
                 host = oc_quiet(cfg, "get", "quayregistry", name, "-o",
                                 "jsonpath={.status.registryHostname}").stdout.strip()
-                print(f"Quay Route: https://{host}")
-                print("Next: ./run.sh ocp verify")
+                base_url = f"https://{host}"
+                print(f"Quay Route: {base_url}")
+                realm_path = render_route_realm_import(cfg, base_url)
+                oc(cfg, "apply", "-f", str(realm_path))
+                print(f"Keycloak realm import: {realm_path.name} "
+                      f"(realm 'quay', users admin_oidc/testuser_oidc/"
+                      "readonly_oidc/sync_oidc, password 'password')")
+                print("Next: ./run.sh ocp verify   "
+                      "(or log into the Quay UI above with admin_oidc)")
                 return 0
             time.sleep(15)
         sys.exit("ERROR: QuayRegistry did not become Available. Check: ./run.sh ocp logs")
@@ -709,7 +838,10 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
         if not host:
             sys.exit(f"ERROR: QuayRegistry {name} has no registryHostname yet; run ocp apply first.")
         base_url = f"https://{host}"
-        write_generated_manifests(cfg, quay_base_url=base_url)
+        kc_host = keycloak_route_host(cfg)
+        kc_url = (f"https://{kc_host}/realms/quay" if kc_host
+                  else f"{keycloak_internal_base(cfg)}/realms/quay")
+        write_generated_manifests(cfg, quay_base_url=base_url, keycloak_url=kc_url)
         # Re-apply the generated ConfigMaps: quay-harness-params now carries
         # the resolved Route URL (it was empty during `ocp apply`).
         for cname in ("quay-harness-verify", "quay-harness-params"):
