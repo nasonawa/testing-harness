@@ -11,7 +11,7 @@
 #
 # `./run.sh ocp apply` waits for the Available condition (~10-15 min on a
 # fresh namespace: the operator rolls out every managed component).
-apiVersion: operators.coreos.com/v1
+apiVersion: quay.redhat.com/v1
 kind: QuayRegistry
 metadata:
   name: quay
