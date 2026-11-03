@@ -27,6 +27,7 @@ import os
 import pathlib
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import time
@@ -173,6 +174,17 @@ def try_run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 def http_ok(url: str, timeout: float = 5) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= resp.status < 400
+    except Exception:
+        return False
+
+
+def https_ok_unverified(url: str, timeout: float = 10) -> bool:
+    """Health check for OpenShift Routes (the ingress CA is not in the local
+    trust store; these are readiness probes, not confidential channels)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout,
+                                     context=ssl.create_unverified_context()) as resp:
             return 200 <= resp.status < 400
     except Exception:
         return False
@@ -799,10 +811,39 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
         oc(cfg, "patch", "keycloak", keycloak_cr_name(),
            "--type", "merge", "-p", patch)
         wait_for_keycloak(cfg, want_hostname=True)
-        kc_base = f"https://{keycloak_route_host(cfg)}"
+        kc_host = keycloak_route_host(cfg)
+        kc_base = f"https://{kc_host}"
         print(f"Keycloak Route: {kc_base}")
 
-        # Phase 3: config bundle with the public issuer + QuayRegistry + RBAC.
+        # Phase 3: import the realm BEFORE Quay. Quay's config validation
+        # creates the OIDC provider at deploy time and fails with
+        # "Realm does not exist" if the realm is not there yet. The Quay
+        # Route host is deterministic — the quay-operator derives it as
+        # <registry-name>-quay-<namespace>.<appsDomain> (fillServerHostname)
+        # — and the appsDomain is the suffix of the Keycloak hostname, so
+        # the realm's redirect URIs are known before Quay deploys.
+        kc_prefix = f"{keycloak_cr_name()}-ingress-{cfg['OCP_NAMESPACE']}."
+        if not kc_host.startswith(kc_prefix) or "." not in kc_host[len(kc_prefix):]:
+            sys.exit(f"ERROR: unexpected Keycloak hostname {kc_host!r}; cannot derive "
+                     f"the apps domain (expected prefix {kc_prefix!r}).")
+        apps_domain = kc_host[len(kc_prefix):]
+        quay_host = f"{name}-quay-{cfg['OCP_NAMESPACE']}.{apps_domain}"
+        realm_path = render_route_realm_import(cfg, f"https://{quay_host}")
+        oc(cfg, "apply", "-f", str(realm_path))
+        print("Waiting for the realm import (realm 'quay') ...")
+        discovery = f"{kc_base}/realms/quay/.well-known/openid-configuration"
+        deadline = time.time() + 5 * 60
+        while time.time() < deadline:
+            if https_ok_unverified(discovery):
+                print("Realm 'quay' is available.")
+                break
+            time.sleep(10)
+        else:
+            sys.exit("ERROR: the realm was not imported. Check: "
+                     "oc -n quay-oidc-harness get keycloakrealmimport "
+                     "quay-oidc-realm -o yaml")
+
+        # Phase 4: config bundle with the public issuer + QuayRegistry + RBAC.
         write_generated_manifests(cfg)
         bundle = (OCP_DIR / "config-bundle.yaml").read_text()
         bundle = bundle.replace(keycloak_internal_base(cfg), kc_base)
@@ -812,8 +853,7 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
         oc(cfg, "apply", "-f", str(OCP_DIR / "quayregistry.yaml"))
         oc(cfg, "apply", "-f", str(OCP_DIR / "rbac.yaml"))
 
-        # Phase 4: wait for Quay, then import the realm with the Quay
-        # callback (only creates the realm if it does not exist yet).
+        # Phase 5: wait for Quay (its config validation now finds the realm).
         print(f"Waiting for QuayRegistry {name} to become Available "
               f"(the operator deploys managed components; ~10-15 min) ...")
         deadline = time.time() + 15 * 60
@@ -826,10 +866,13 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
                                 "jsonpath={.status.registryHostname}").stdout.strip()
                 base_url = f"https://{host}"
                 print(f"Quay Route: {base_url}")
-                realm_path = render_route_realm_import(cfg, base_url)
-                oc(cfg, "apply", "-f", str(realm_path))
-                print(f"Keycloak realm import: {realm_path.name} "
-                      f"(realm 'quay', users admin_oidc/testuser_oidc/"
+                if host != quay_host:
+                    print(f"WARNING: the actual Quay Route host {host!r} differs from "
+                          f"the predicted {quay_host!r} used in the realm's redirect "
+                          "URIs — browser login may fail. Fix the realm's quay-ui "
+                          "client redirect URIs in Keycloak or re-run from a fresh "
+                          "`./run.sh ocp delete`.")
+                print(f"Keycloak realm: 'quay' (users admin_oidc/testuser_oidc/"
                       "readonly_oidc/sync_oidc, password 'password')")
                 print("Next: ./run.sh ocp verify   "
                       "(or log into the Quay UI above with admin_oidc)")

@@ -140,10 +140,15 @@ Two apply modes:
   cluster-internal DNS).
 - **Route mode** — `./run.sh ocp apply` additionally patches the Keycloak
   CR so the RHBK operator assigns its default public Route hostname
-  (`quay-keycloak-ingress-<namespace>.<appsDomain>`), rewrites Quay's
-  config bundle to that issuer, and imports the realm with the Quay
-  Route callback in the `quay-ui` client's redirect URIs — **browser
-  login works** (users `admin_oidc`/`testuser_oidc`/`readonly_oidc`/
+  (`quay-keycloak-ingress-<namespace>.<appsDomain>`), imports the realm
+  with the Quay Route callback in the `quay-ui` client's redirect URIs,
+  and only then applies the QuayRegistry with a config bundle rewritten
+  to that issuer — Quay's config validation contacts the OIDC provider
+  at deploy time, so the realm must exist first. The Quay Route host is
+  predicted from the apps domain before Quay deploys (the quay-operator
+  derives it deterministically as `<registry>-quay-<namespace>.<appsDomain>`),
+  and `ocp apply` warns if the actual host differs. **Browser login
+  works** (users `admin_oidc`/`testuser_oidc`/`readonly_oidc`/
   `sync_oidc`, password `password`). Switching from static to route mode
   on an existing deployment requires `./run.sh ocp delete` first: the
   operator only imports realms that do not exist yet.

@@ -207,8 +207,12 @@ def make_log_source(spec: str, namespace: str | None, label: str | None, service
 # ---------------------------------------------------------------------------
 
 def http_get_json(url: str, timeout: float = 30) -> tuple[int, dict | None]:
+    # OpenShift Routes serve TLS with the cluster's ingress CA, which is not
+    # in the verify Job's trust store — these are health/issuer checks, not
+    # confidential channels, so skip verification for https.
+    ctx = ssl._create_unverified_context() if url.startswith("https") else None
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, None
