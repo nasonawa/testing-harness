@@ -1,8 +1,8 @@
 # Keycloak (identity provider for the OIDC harness) on OpenShift.
 #
-# The realm is NOT duplicated here: run.py materializes
-# keycloak/quay-realm.json into ocp/generated/quay-oidc-realm.yaml on every
-# render/apply, keeping that file the single source of truth.
+# The realm is NOT duplicated here: it lives in quay-oidc-realm.yaml next to
+# this file (single source: keycloak/quay-realm.json, which run.py uses to
+# refresh that ConfigMap on every render/apply).
 #
 # The realm's browser redirect URIs (localhost:8080/8081) are compose-only
 # and irrelevant here: the OCP verify path is API-only (no browser), and the

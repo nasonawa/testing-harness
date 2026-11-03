@@ -121,11 +121,17 @@ security note.
 
 `ocp/` deploys the same scenario through the quay-operator: namespace
 `quay-oidc-harness`, on-cluster Keycloak (realm single-sourced from
-`keycloak/quay-realm.json` via a run.py-generated ConfigMap), a
+`keycloak/quay-realm.json` into the tracked
+`ocp/idp/quay-oidc-realm.yaml` ConfigMap, refreshed by run.py), a
 `QuayRegistry` with a config bundle whose OIDC endpoints point at the
 in-cluster Keycloak service, and a verify Job running **the same
 `verify.py`** (health, discovery-issuer match, no-secrets-in-logs) with
 `--log-source ocp`.
+
+The kustomization is **self-contained**: a bare `oc apply -k ocp/` from a
+fresh clone deploys the whole stack (Keycloak + realm, Quay with OIDC and
+local storage) with no run.py step. `./run.sh ocp …` wraps the same
+kustomization with waiting, verify and reporting.
 
 Prerequisites: the quay-operator installed via OLM, `oc` logged in.
 

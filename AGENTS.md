@@ -72,8 +72,11 @@ Generated/local state — **never commit**: `.env`, `reports/`, `bin/`,
 - **Env knobs**: everything in `.env.example` (ports, images, labels,
   namespaces, DOCKER/DOCKER_USER, RUN_LABEL).
 - **OCP additions**: add resources to `ocp/` kustomization; fixture data
-  reaches the cluster only via run.py-generated ConfigMaps in
-  `ocp/generated/` (kustomize cannot read above `ocp/`).
+  the stack needs at apply time is a tracked ConfigMap under `ocp/`
+  (refreshed by run.py from the fixture, so a bare `oc apply -k ocp/`
+  works from a fresh clone); run.py-generated ConfigMaps in
+  `ocp/generated/` are for per-run artifacts only (verify code, resolved
+  URLs) — kustomize cannot read above `ocp/`.
 - **New harness**: copy `harnesses/_template/` and resolve every
   EDIT-ME, or use the `port-harness` skill for an existing ad-hoc harness.
 

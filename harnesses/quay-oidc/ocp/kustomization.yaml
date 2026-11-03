@@ -1,16 +1,15 @@
 # OpenShift variant of the OIDC harness (operator-installed Quay).
 #
-# Render/apply/delete ONLY through ./run.sh ocp ...: the generated/ resources
-# (verify code, Keycloak realm, job parameters) are materialized by run.py from the
-# harness's single sources of truth and are gitignored, so a bare
-# `oc apply -k ocp/` from a fresh clone will fail on the missing files.
+# Fully self-contained: a bare `oc apply -k ocp/` from a fresh clone deploys
+# the namespace, Keycloak (+ realm), the config bundle and the QuayRegistry
+# (OIDC + local storage). `./run.sh ocp apply|verify` wraps the same
+# kustomization with waiting/reporting; `ocp verify` additionally applies
+# the per-run verify Job and its generated ConfigMaps (ocp/generated/,
+# gitignored).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - namespace.yaml
-  - generated/quay-oidc-realm.yaml
-  - generated/quay-harness-verify.yaml
-  - generated/quay-harness-params.yaml
   - idp/
   - config-bundle.yaml
   - quayregistry.yaml

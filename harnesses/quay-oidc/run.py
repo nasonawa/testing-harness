@@ -584,34 +584,66 @@ def oc_quiet(cfg: dict, *args) -> subprocess.CompletedProcess:
     return try_run(["oc", "-n", cfg["OCP_NAMESPACE"], *[str(a) for a in args]])
 
 
+REALM_CM_HEADER = [
+    "# Keycloak realm for the Quay OIDC harness, embedded as a ConfigMap so a",
+    "# bare `oc apply -k ocp/` works from a fresh clone (no run.py needed).",
+    "#",
+    "# Single source of truth: keycloak/quay-realm.json in the harness root.",
+    "# run.py refreshes THIS file from that fixture on every render/apply",
+    "# (write_generated_manifests) — edit the fixture, never this file; if the",
+    "# two drift, the next `./run.sh ocp apply` rewrites this copy and the",
+    "# diff shows up in git.",
+    "#",
+    "# Dev-only fixture credentials (password: \"password\" for every user):",
+    "# intentional, see the repo AGENTS.md security note.",
+]
+
+
 def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> None:
-    """Materialize ocp/generated/ from the harness's single sources of truth.
+    """Materialize the OCP ConfigMaps that embed harness sources.
 
     Kustomize's load restrictor forbids referencing files above ocp/, so the
-    verify code, the Keycloak realm and the job parameters are embedded into
-    generated ConfigMap manifests here, freshly on every render/apply.
+    verify code and the job parameters are embedded into ConfigMap manifests
+    here, freshly on every render/apply. They land in ocp/generated/
+    (gitignored) and are applied by `ocp verify` only — a bare
+    `oc apply -k ocp/` does not need them.
+
+    The Keycloak realm ConfigMap is different: it is TRACKED at
+    ocp/idp/quay-oidc-realm.yaml so `oc apply -k ocp/` works from a fresh
+    clone. It is refreshed here from keycloak/quay-realm.json, which stays
+    the single source of truth.
     """
     OCP_GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 
-    def emit_configmap(name: str, data: dict[str, str]) -> None:
-        lines = ["apiVersion: v1", "kind: ConfigMap", "metadata:",
-                 f"  name: {name}", "data:"]
+    def emit_configmap(name: str, data: dict[str, str], *, path=None,
+                       namespace=None, header=()) -> None:
+        lines = [*header, "apiVersion: v1", "kind: ConfigMap", "metadata:",
+                 f"  name: {name}"]
+        if namespace:
+            lines.append(f"  namespace: {namespace}")
+        lines.append("data:")
         for key, content in data.items():
             lines.append(f"  {key}: |")
             lines.extend(f"    {ln}" if ln else "" for ln in content.splitlines())
-        (OCP_GENERATED_DIR / f"{name}.yaml").write_text("\n".join(lines) + "\n")
+        target = path or (OCP_GENERATED_DIR / f"{name}.yaml")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines) + "\n")
+
+    realm_src = (HARNESS_DIR / "keycloak" / "quay-realm.json").read_text()
+    emit_configmap("quay-oidc-realm", {"quay-realm.json": realm_src},
+                   path=OCP_DIR / "idp" / "quay-oidc-realm.yaml",
+                   namespace=cfg["OCP_NAMESPACE"], header=REALM_CM_HEADER)
 
     verify_src = (HARNESS_DIR / "verify.py").read_text()
-    realm_src = (HARNESS_DIR / "keycloak" / "quay-realm.json").read_text()
-    emit_configmap("quay-harness-verify", {"verify.py": verify_src})
-    emit_configmap("quay-oidc-realm", {"quay-realm.json": realm_src})
+    emit_configmap("quay-harness-verify", {"verify.py": verify_src},
+                   namespace=cfg["OCP_NAMESPACE"])
     emit_configmap("quay-harness-params", {
         "QUAY_BASE_URL": quay_base_url or "",
         "K8S_NAMESPACE": cfg["OCP_NAMESPACE"],
         "QUAY_POD_LABEL": cfg["QUAY_POD_LABEL"],
         "KEYCLOAK_ISSUER": f"http://quay-keycloak.{cfg['OCP_NAMESPACE']}.svc.cluster.local:8080/realms/quay",
         "KEYCLOAK_URL": f"http://quay-keycloak.{cfg['OCP_NAMESPACE']}.svc.cluster.local:8080/realms/quay",
-    })
+    }, namespace=cfg["OCP_NAMESPACE"])
 
 
 def render_kustomize(cfg: dict) -> str:
@@ -719,8 +751,10 @@ def cmd_ocp(cfg: dict, args: list[str]) -> int:
 
     if sub == "delete":
         oc(cfg, "delete", "-k", str(OCP_DIR), "--ignore-not-found")
+        # The verify/params ConfigMaps are not part of the kustomization
+        # (only `ocp verify` applies them); delete them explicitly.
         oc(cfg, "delete", "configmap", "quay-harness-verify", "quay-harness-params",
-           "quay-oidc-realm", "--ignore-not-found")
+           "--ignore-not-found")
         return 0
 
     print(f"Unknown ocp subcommand: {sub}\n\nocp render|apply|verify|logs|delete")
