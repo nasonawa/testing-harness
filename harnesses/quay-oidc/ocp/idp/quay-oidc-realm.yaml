@@ -1,21 +1,30 @@
-# Keycloak realm for the Quay OIDC harness, embedded as a ConfigMap so a
-# bare `oc apply -k ocp/` works from a fresh clone (no run.py needed).
+# Keycloak realm for the Quay OIDC harness, imported by the Red Hat
+# build of Keycloak operator (KeycloakRealmImport) so a bare
+# `oc apply -k ocp/` sets up the full IdP from a fresh clone.
 #
 # Single source of truth: keycloak/quay-realm.json in the harness root.
 # run.py refreshes THIS file from that fixture on every render/apply
 # (write_generated_manifests) — edit the fixture, never this file; if the
 # two drift, the next `./run.sh ocp apply` rewrites this copy and the
-# diff shows up in git.
+# diff shows up in git. The indented JSON under `realm:` is that
+# fixture, verbatim (JSON is valid YAML).
+#
+# Note: the operator only imports realms that do not exist yet —
+# re-applying does NOT update an already-imported realm. To force a
+# re-import: drop the realm in Keycloak, then
+# `oc -n quay-oidc-harness delete keycloakrealmimport quay-oidc-realm`
+# and re-apply.
 #
 # Dev-only fixture credentials (password: "password" for every user):
 # intentional, see the repo AGENTS.md security note.
-apiVersion: v1
-kind: ConfigMap
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
 metadata:
   name: quay-oidc-realm
   namespace: quay-oidc-harness
-data:
-  quay-realm.json: |
+spec:
+  keycloakCRName: quay-keycloak
+  realm:
     {
       "realm": "quay",
       "enabled": true,

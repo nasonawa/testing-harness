@@ -1,0 +1,81 @@
+# Dev-only ephemeral Postgres for the operator-managed Keycloak (the RHBK
+# operator requires a database and does not manage one itself). Data is
+# emptyDir: wiped when the pod restarts, which also resets Keycloak
+# identities — acceptable for this verify-only harness (the realm is
+# re-imported by KeycloakRealmImport on a fresh namespace).
+#
+# Dev-only fixture credentials (keycloak/keycloak): intentional, see the
+# repo AGENTS.md security note.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quay-keycloak-db
+  namespace: quay-oidc-harness
+type: Opaque
+stringData:
+  username: keycloak
+  password: keycloak
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: quay-keycloak-db
+  namespace: quay-oidc-harness
+  labels:
+    app: quay-keycloak-db
+spec:
+  serviceName: quay-keycloak-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quay-keycloak-db
+  template:
+    metadata:
+      labels:
+        app: quay-keycloak-db
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:15
+          env:
+            - name: POSTGRES_USER
+              value: keycloak
+            - name: POSTGRES_PASSWORD
+              value: keycloak
+            - name: POSTGRES_DB
+              value: keycloak
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "keycloak", "-d", "keycloak"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quay-keycloak-db
+  namespace: quay-oidc-harness
+spec:
+  selector:
+    app: quay-keycloak-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

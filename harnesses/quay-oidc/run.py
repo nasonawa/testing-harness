@@ -584,15 +584,23 @@ def oc_quiet(cfg: dict, *args) -> subprocess.CompletedProcess:
     return try_run(["oc", "-n", cfg["OCP_NAMESPACE"], *[str(a) for a in args]])
 
 
-REALM_CM_HEADER = [
-    "# Keycloak realm for the Quay OIDC harness, embedded as a ConfigMap so a",
-    "# bare `oc apply -k ocp/` works from a fresh clone (no run.py needed).",
+REALM_IMPORT_HEADER = [
+    "# Keycloak realm for the Quay OIDC harness, imported by the Red Hat",
+    "# build of Keycloak operator (KeycloakRealmImport) so a bare",
+    "# `oc apply -k ocp/` sets up the full IdP from a fresh clone.",
     "#",
     "# Single source of truth: keycloak/quay-realm.json in the harness root.",
     "# run.py refreshes THIS file from that fixture on every render/apply",
     "# (write_generated_manifests) — edit the fixture, never this file; if the",
     "# two drift, the next `./run.sh ocp apply` rewrites this copy and the",
-    "# diff shows up in git.",
+    "# diff shows up in git. The indented JSON under `realm:` is that",
+    "# fixture, verbatim (JSON is valid YAML).",
+    "#",
+    "# Note: the operator only imports realms that do not exist yet —",
+    "# re-applying does NOT update an already-imported realm. To force a",
+    "# re-import: drop the realm in Keycloak, then",
+    "# `oc -n quay-oidc-harness delete keycloakrealmimport quay-oidc-realm`",
+    "# and re-apply.",
     "#",
     "# Dev-only fixture credentials (password: \"password\" for every user):",
     "# intentional, see the repo AGENTS.md security note.",
@@ -600,7 +608,7 @@ REALM_CM_HEADER = [
 
 
 def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> None:
-    """Materialize the OCP ConfigMaps that embed harness sources.
+    """Materialize the OCP manifests that embed harness sources.
 
     Kustomize's load restrictor forbids referencing files above ocp/, so the
     verify code and the job parameters are embedded into ConfigMap manifests
@@ -608,7 +616,7 @@ def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> No
     (gitignored) and are applied by `ocp verify` only — a bare
     `oc apply -k ocp/` does not need them.
 
-    The Keycloak realm ConfigMap is different: it is TRACKED at
+    The KeycloakRealmImport is different: it is TRACKED at
     ocp/idp/quay-oidc-realm.yaml so `oc apply -k ocp/` works from a fresh
     clone. It is refreshed here from keycloak/quay-realm.json, which stays
     the single source of truth.
@@ -629,10 +637,21 @@ def write_generated_manifests(cfg: dict, quay_base_url: str | None = None) -> No
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("\n".join(lines) + "\n")
 
+    # KeycloakRealmImport CR embedding the realm fixture under spec.realm
+    # (consumed by the Red Hat build of Keycloak operator).
     realm_src = (HARNESS_DIR / "keycloak" / "quay-realm.json").read_text()
-    emit_configmap("quay-oidc-realm", {"quay-realm.json": realm_src},
-                   path=OCP_DIR / "idp" / "quay-oidc-realm.yaml",
-                   namespace=cfg["OCP_NAMESPACE"], header=REALM_CM_HEADER)
+    realm_path = OCP_DIR / "idp" / "quay-oidc-realm.yaml"
+    realm_lines = [*REALM_IMPORT_HEADER,
+                   "apiVersion: k8s.keycloak.org/v2beta1",
+                   "kind: KeycloakRealmImport",
+                   "metadata:",
+                   "  name: quay-oidc-realm",
+                   f"  namespace: {cfg['OCP_NAMESPACE']}",
+                   "spec:",
+                   "  keycloakCRName: quay-keycloak",
+                   "  realm:"]
+    realm_lines.extend(f"    {ln}" if ln else "" for ln in realm_src.splitlines())
+    realm_path.write_text("\n".join(realm_lines) + "\n")
 
     verify_src = (HARNESS_DIR / "verify.py").read_text()
     emit_configmap("quay-harness-verify", {"verify.py": verify_src},
