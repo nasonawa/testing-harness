@@ -5,9 +5,18 @@
 # UNMANAGED: the config bundle provides LocalStorage (see
 # config-bundle.yaml — no RHOCS/ODF dependency, but registry data is
 # ephemeral; the compose harness's Garage S3 georeplication stays
-# compose-only). The repo mirror is disabled (not under test); Clair is
-# enabled so the scanner wiring matches the compose harness — flip it to
-# managed: false if the cluster lacks the resources.
+# compose-only). The repo mirror and HPA are disabled (not under test).
+#
+# RESOURCE SIZING (important on small clusters): the operator's defaults
+# are production-sized — quay-app alone reserves 2 CPU / 8Gi, postgres and
+# clair-postgres 500m / 2Gi each, redis 500m / 1Gi, clair 2 CPU / 2Gi
+# (see the operator's kustomize/components). On a 3-worker dev cluster
+# that strands quay-app with "Insufficient cpu / Insufficient memory"
+# scheduling errors. The overrides below right-size every managed
+# component for a dev cluster. Clair and its Postgres are disabled
+# entirely (not under test in this OIDC harness); to re-enable, set both
+# back to managed: true and give clair a clairpostgres entry with its own
+# resources override.
 #
 # `./run.sh ocp apply` waits for the Available condition (~10-15 min on a
 # fresh namespace: the operator rolls out every managed component).
@@ -19,16 +28,42 @@ metadata:
 spec:
   configBundleSecret: quay-config-bundle-oidc
   components:
+    - kind: quay
+      managed: true
+      overrides:
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
     - kind: postgres
       managed: true
+      overrides:
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
     - kind: redis
       managed: true
+      overrides:
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
     - kind: objectstorage
       managed: false
     - kind: route
       managed: true
     - kind: clair
-      managed: true
+      managed: false
+    - kind: clairpostgres
+      managed: false
     - kind: mirror
       managed: false
     - kind: horizontalpodautoscaler
