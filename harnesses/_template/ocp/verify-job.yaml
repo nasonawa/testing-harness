@@ -1,0 +1,47 @@
+# EDIT-ME product — verify Job template, applied by `./run.sh ocp verify`
+# (not by ocp apply), which appends a timestamp to the Job name on every
+# run. The metadata name below must stay distinctive so run.py's name
+# substitution cannot collide with the configMap volume reference.
+#
+# The container runs the SAME verify.py as compose mode (mounted from the
+# generated product-harness-verify ConfigMap) with --log-source ocp so logs
+# are read through the Kubernetes API using this pod's service account.
+# Base URL / namespace / pod label come from the generated params ConfigMap.
+# verify.py prints verify.md between marker lines; run.py extracts it from
+# the Job logs into reports/runs/<ts>-ocp/verify.md. backoffLimit: 0 — a
+# failed check must surface, not retry into a confusing transcript.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: product-harness-verify-job
+  namespace: product-harness
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: product-harness-verify
+    spec:
+      restartPolicy: Never
+      serviceAccountName: product-harness-verify
+      containers:
+        - name: verify
+          image: python:3.12-slim  # stdlib-only verify.py, zero pip
+          command: ["python3", "/verify/verify.py"]
+          args:
+            - --log-source
+            - ocp
+            - --report-dir
+            - /tmp/report
+            - --print-report
+          envFrom:
+            - configMapRef:
+                name: product-harness-params
+          volumeMounts:
+            - name: verify
+              mountPath: /verify
+              readOnly: true
+      volumes:
+        - name: verify
+          configMap:
+            name: product-harness-verify

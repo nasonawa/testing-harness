@@ -1,0 +1,16 @@
+# EDIT-ME product — source-mode override. run.py appends this file
+# (-f compose.build.yaml) iff PRODUCT_REPO_ROOT is set.
+#
+# Contract:
+# - every service sharing the product image must be overridden TOGETHER
+#   (a missed sibling silently pulls the published image and you test the
+#   wrong binary — quay-oidc overrides quay + repomirror for this reason)
+# - PRODUCT_BUILT_IMAGE is deliberately a different tag from PRODUCT_IMAGE
+#   so a local build can never shadow the published ref
+services:
+  product:
+    build:
+      context: ${PRODUCT_REPO_ROOT}
+      dockerfile: Dockerfile  # EDIT-ME: path/target within the product repo
+      target: final
+    image: ${PRODUCT_BUILT_IMAGE:-localhost/product-harness-product:latest}

@@ -1,0 +1,63 @@
+# EDIT-ME product — pull-mode compose (the default).
+#
+# Contract (see ../_template/TEMPLATE.md):
+# - the product service has NO build: key here; it pulls ${PRODUCT_IMAGE}
+# - compose.build.yaml (appended by run.py when PRODUCT_REPO_ROOT is set)
+#   adds the build: and retags to PRODUCT_BUILT_IMAGE
+# - the playwright runner is profile-gated so plain `docker compose up`
+#   never starts it
+# - service/volume/network names should stay stable: other tooling (verify.py
+#   log source, report scripts) references them by name
+
+name: product-harness  # EDIT-ME: stable project name (volume reuse depends on it)
+
+services:
+  # EDIT-ME services: the product + its dependencies. Keep healthchecks,
+  # dependency order (depends_on: condition: service_healthy) and volume
+  # names from the original harness byte-identical where possible.
+  product:
+    image: ${PRODUCT_IMAGE:-registry.example/product:latest}
+    ports:
+      - "${PRODUCT_HOST_PORT:-18080}:8080"
+    volumes:
+      - ./config/product:/conf/stack:Z
+    depends_on:
+      product-db:
+        condition: service_healthy
+
+  product-db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: product
+      POSTGRES_PASSWORD: product
+      POSTGRES_DB: product
+    volumes:
+      - product-db-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U product"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Test runner — only started via run.py test/shell (profile "test").
+  playwright:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Containerfile.playwright
+      additional_contexts:
+        # Named context: lets the Containerfile COPY files from the product
+        # source checkout without making it the build context.
+        productrepo: ${PRODUCT_REPO_ROOT:-.}
+    image: localhost/product-harness-playwright:latest  # EDIT-ME
+    volumes:
+      # The suite itself bind-mounts from the checkout (test needs
+      # PRODUCT_REPO_ROOT even in pull mode):
+      - ${PRODUCT_REPO_ROOT:-.}/EDIT-ME-suite-dir:/work/suite:Z
+      - ./reports:/work/reports:Z
+    depends_on:
+      - product
+
+volumes:
+  product-db-data:

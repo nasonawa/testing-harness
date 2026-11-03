@@ -1,0 +1,23 @@
+# EDIT-ME product — OpenShift variant (operator-installed product).
+#
+# Render/apply/delete ONLY through ./run.sh ocp ...: the generated/ resources
+# are materialized by run.py from the harness's single sources of truth and
+# are gitignored (kustomize's load restrictor forbids paths above ocp/), so
+# a bare `oc apply -k ocp/` from a fresh clone fails on the missing files.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  # EDIT-ME generated: ConfigMaps run.py materializes into generated/ —
+  # typically: the verify code, the fixture files it needs, and a params
+  # ConfigMap (base URL, namespace, pod label) consumed by the verify Job.
+  # - generated/product-harness-verify.yaml
+  # - generated/product-harness-params.yaml
+  - idp/            # on-cluster dependency services (EDIT-ME or remove)
+  - rbac.yaml
+  # EDIT-ME: the operator CR + its config bundle, e.g.
+  # - config-bundle.yaml
+  # - productcluster.yaml
+# verify-job.yaml is NOT here: `ocp verify` applies it per-run with a unique
+# name and the resolved external URL (it also re-applies the generated
+# ConfigMaps, since the params ConfigMap carries that URL).

@@ -15,6 +15,10 @@ harnesses/*/ocp/generated/
 # User-local compose overrides (auto-included by run.py when present)
 harnesses/*/compose.override.yaml
 
+# Extracted product binaries / builder state mounted from repo roots
+# (e.g. quay's local-dev/quay-builder via the OIDC harness)
+harnesses/*/local-dev/
+
 # Python
 __pycache__/
 *.pyc

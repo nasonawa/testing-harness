@@ -1,0 +1,13 @@
+# EDIT-ME: on-cluster dependency services the product needs to reproduce
+# the compose scenario (an IdP, a database, an object store, ...). Keep them
+# in-cluster and reachable via service DNS — the OCP variant is API-verify
+# only (no browser), so no Routes are needed. Remove this directory if the
+# product needs nothing extra.
+#
+# Fixture data that also exists as a harness file (an ldif, a realm json)
+# must be single-sourced: reference the ConfigMap run.py generates into
+# ../generated/ instead of duplicating the content here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []
+  # - dependency.yaml

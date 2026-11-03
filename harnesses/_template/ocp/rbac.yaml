@@ -1,0 +1,36 @@
+# EDIT-ME product — least-privilege RBAC for the verify Job: it enumerates
+# the product's pods and reads their logs (the log_* checks scan the same
+# stdout stream the harness gates in compose mode). Read-only, namespaced,
+# no Secrets access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: product-harness-verify
+  namespace: product-harness
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: product-harness-verify
+  namespace: product-harness
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: product-harness-verify
+  namespace: product-harness
+subjects:
+  - kind: ServiceAccount
+    name: product-harness-verify
+    namespace: product-harness
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: product-harness-verify

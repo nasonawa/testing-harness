@@ -1,0 +1,10 @@
+# EDIT-ME product — namespace for the OpenShift variant. Everything the
+# harness deploys on the cluster lives here and is removed by
+# `./run.sh ocp delete`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: product-harness
+  labels:
+    app.kubernetes.io/name: product-harness
+    app.kubernetes.io/part-of: testing-harness

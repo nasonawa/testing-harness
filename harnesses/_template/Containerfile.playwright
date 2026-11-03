@@ -1,0 +1,22 @@
+# EDIT-ME product — Playwright/test runner image.
+#
+# Built with two contexts (see compose.yaml):
+#   .            the harness directory (this file, entrypoint, helpers, bin/)
+#   productrepo  the product source checkout (via additional_contexts)
+# COPY rules:
+#   - product-repo files: COPY --from=productrepo <path> ...
+#   - harness-local files: COPY <path> ... (never reference ../)
+
+# EDIT-ME base: match the version pinned by the product repo's own CI.
+FROM mcr.microsoft.com/playwright:v1.0.0-jammy
+
+# Product-repo files first (layer-caching: lockfiles before sources).
+COPY --from=productrepo EDIT-ME-lockfile /tmp/EDIT-ME-lockfile
+# EDIT-ME: install the suite's dependencies (npm ci / pip install ...)
+
+# Harness-local files.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+# COPY bin/ /usr/local/bin/  # if the harness ships CLIs (see fetch-tools.sh)
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

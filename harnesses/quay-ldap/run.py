@@ -205,7 +205,8 @@ def use_aliases(cfg: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def compose_base(cfg: dict) -> list[str]:
-    return [cfg["DOCKER"], "compose", *compose_files(cfg)]
+    files = compose_files(cfg)
+    return [cfg["DOCKER"], "compose", *(arg for f in files for arg in ("-f", f))]
 
 
 def compose(cfg: dict, *args, profiles: bool = True, **kw) -> subprocess.CompletedProcess:
