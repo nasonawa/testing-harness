@@ -1,9 +1,12 @@
 # QuayRegistry deployed by the quay-operator (install it via OLM first:
 # https://docs.projectquay.io/deploy_quay_on_openshift_op_tng.html).
 #
-# postgres, redis, object storage (RHOCS/default storage class) and the Route
-# are operator-managed. The repo mirror is disabled (not under test); Clair
-# is enabled so the scanner wiring matches the compose harness — flip it to
+# postgres, redis and the Route are operator-managed. objectstorage is
+# UNMANAGED: the config bundle provides LocalStorage (see
+# config-bundle.yaml — no RHOCS/ODF dependency, but registry data is
+# ephemeral; the compose harness's Garage S3 georeplication stays
+# compose-only). The repo mirror is disabled (not under test); Clair is
+# enabled so the scanner wiring matches the compose harness — flip it to
 # managed: false if the cluster lacks the resources.
 #
 # `./run.sh ocp apply` waits for the Available condition (~10-15 min on a
@@ -14,14 +17,14 @@ metadata:
   name: quay
   namespace: quay-oidc-harness
 spec:
-  configBundleSecretRef: quay-config-bundle-oidc
+  configBundleSecret: quay-config-bundle-oidc
   components:
     - kind: postgres
       managed: true
     - kind: redis
       managed: true
-    - kind: storage
-      managed: true
+    - kind: objectstorage
+      managed: false
     - kind: route
       managed: true
     - kind: clair

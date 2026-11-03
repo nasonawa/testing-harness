@@ -129,6 +129,13 @@ in-cluster Keycloak service, and a verify Job running **the same
 
 Prerequisites: the quay-operator installed via OLM, `oc` logged in.
 
+The config bundle uses **local filesystem storage** (`objectstorage`
+unmanaged, `LocalStorage` at `/datastorage/registry`) so the harness needs
+no RHOCS/ODF dependency — note the operator mounts no PVC there, so
+registry data is ephemeral (pod restart wipes it; fine for this
+verify-only harness). Swap in a real backend in `ocp/config-bundle.yaml`
+and set `objectstorage` back to `managed: true` for durable storage.
+
 ```bash
 ./run.sh ocp apply    # ~10-15 min; waits for the QuayRegistry
 ./run.sh ocp verify   # runs the verify Job against the Quay Route

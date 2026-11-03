@@ -2,9 +2,11 @@
 #
 # This is the harness config/stack/config.yaml reduced to the keys the
 # operator does not manage itself. The operator provisions and injects
-# DB_URI, Redis, storage, Clair, mail, SERVER_HOSTNAME and TLS; those keys
-# must NOT appear here (the operator validates the bundle strictly — there
-# is no IGNORE_VALIDATION escape hatch on OCP).
+# DB_URI, Redis, Clair, mail, SERVER_HOSTNAME and TLS; those keys must NOT
+# appear here (the operator validates the bundle strictly — there is no
+# IGNORE_VALIDATION escape hatch on OCP). Storage IS ours: objectstorage is
+# unmanaged in the QuayRegistry, so the LocalStorage block below is the
+# storage configuration Quay runs with.
 #
 # Dev-only fixture credentials (Directory Manager "admin"): intentional, see
 # the repo AGENTS.md security note.
@@ -40,6 +42,21 @@ stringData:
       - quayadmin
       - readonly
       - readonly_ldap
+
+    # Local filesystem storage (matches the compose harness's
+    # config/stack/config.yaml). objectstorage is unmanaged in the
+    # QuayRegistry, so this is the storage configuration Quay runs with.
+    # NOTE: the operator's quay-app Deployment mounts no PVC at
+    # /datastorage — registry data is EPHEMERAL (lost on pod restart).
+    # Acceptable for this verify-only harness; swap in S3/RHOCS/GCS here
+    # and flip objectstorage back to managed: true for anything durable.
+    DISTRIBUTED_STORAGE_CONFIG:
+      default:
+        - LocalStorage
+        - storage_path: /datastorage/registry
+    DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS: []
+    DISTRIBUTED_STORAGE_PREFERENCE:
+      - default
 
     SETUP_COMPLETE: true
     FEATURE_SUPER_USERS: true
