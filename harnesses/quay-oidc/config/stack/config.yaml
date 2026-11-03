@@ -1,0 +1,246 @@
+# Quay configuration for the OIDC test harness (standalone port).
+#
+# Derived from the quay repo's local-dev stack configs (stack, keycloak,
+# georep, builds) — provenance details in the quay repo's
+# .cursor/oidc-testing/config/stack/config.yaml history. Service hostnames
+# (quay-db, quay-redis, quay-keycloak, quay-mailpit, garage, jaeger) resolve
+# on the compose network. Build support requires source mode: run.py
+# extracts local-dev/quay-builder from the QUAY_REPO_ROOT checkout; in pull
+# mode the builder mount is empty and build specs are not runnable.
+SUPER_USERS:
+  - admin
+  - admin_oidc
+GLOBAL_READONLY_SUPER_USERS:
+  - quayadmin
+  - readonly
+AUTHENTICATION_TYPE: OIDC
+DEBUG: true
+BITTORRENT_FILENAME_PEPPER: 0ee18f90-5b6d-42d2-ab5e-ec9fcd846272
+BUILDLOGS_REDIS:
+  host: quay-redis
+  port: 6379
+# Build support (mirrors local-dev/builds/builds-config.yaml). The
+# PopenExecutor forks the quay-builder binary mounted into the container and
+# talks to the host Docker daemon through DOCKER_HOST (see compose.yaml).
+BUILD_MANAGER:
+  - ephemeral
+  - ORCHESTRATOR:
+      REDIS_HOST: quay-redis
+      REDIS_PORT: 6379
+    EXECUTORS:
+      - EXECUTOR: popen
+        BUILDER_BINARY_LOCATION: /quay-builder/quay-builder
+        NAME: ci-builder
+        CONTAINER_RUNTIME: docker
+        INSECURE: true
+        DEBUG: true
+        SETUP_TIME: 120
+DB_URI: postgresql://quay:quay@quay-db/quay
+DATABASE_SECRET_KEY: '30060361640793187613697366923211113205676925445650250274752125083971638376224'
+DEFAULT_TAG_EXPIRATION: 2w
+PERMANENTLY_DELETE_TAGS: true
+# Two-region geo-replication backed by Garage (mirrors
+# local-dev/garage/georep-config.yaml, used by CI with with-georep: true).
+# There is deliberately no LocalStorage backend: the replication worker
+# refuses to start when one is configured.
+DISTRIBUTED_STORAGE_CONFIG:
+  us_east:
+  - RadosGWStorage
+  - hostname: garage
+    is_secure: false
+    storage_path: /datastorage/registry
+    access_key: GKe2e0123456789abcdef01234 # gitleaks:allow: local Garage test key
+    secret_key: e2e0123456789abcdef0123456789abcdef0123456789abcdef01234567890ab # gitleaks:allow: local Garage test key
+    bucket_name: quay-us-east
+    port: 3900
+    signature_version: s3v4
+  eu_west:
+  - RadosGWStorage
+  - hostname: garage
+    is_secure: false
+    storage_path: /datastorage/registry
+    access_key: GKe2e0123456789abcdef01234 # gitleaks:allow: local Garage test key
+    secret_key: e2e0123456789abcdef0123456789abcdef0123456789abcdef01234567890ab # gitleaks:allow: local Garage test key
+    bucket_name: quay-eu-west
+    port: 3900
+    signature_version: s3v4
+DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS:
+  - us_east
+  - eu_west
+DISTRIBUTED_STORAGE_PREFERENCE:
+  - us_east
+FEATURE_STORAGE_REPLICATION: true
+ENTERPRISE_LOGO_URL: /static/img/quay-horizontal-color.svg
+EXTERNAL_TLS_TERMINATION: true
+FEATURE_ANONYMOUS_ACCESS: true
+FEATURE_SUPER_USERS: true
+FEATURE_SUPERUSERS_FULL_ACCESS: true
+FEATURE_APP_SPECIFIC_TOKENS: true
+FEATURE_BUILD_SUPPORT: true
+FEATURE_CHANGE_TAG_EXPIRATION: true
+FEATURE_DIRECT_LOGIN: true
+FEATURE_GARBAGE_COLLECTION: false
+FEATURE_IMAGE_PULL_STATS: false
+FEATURE_MAILING: true
+FEATURE_PARTIAL_USER_AUTOCOMPLETE: true
+FEATURE_REPO_MIRROR: true
+FEATURE_ORG_MIRROR: true
+FEATURE_REQUIRE_TEAM_INVITE: true
+FEATURE_RESTRICTED_V1_PUSH: false
+FEATURE_SECURITY_NOTIFICATIONS: true
+FEATURE_SECURITY_SCANNER: true
+FEATURE_SECURITY_SCANNER_V2: true
+FEATURE_USERNAME_CONFIRMATION: true
+FEATURE_USER_CREATION: true
+FEATURE_USER_LOG_ACCESS: false
+FEATURE_PROXY_CACHE: true
+GITHUB_LOGIN_CONFIG: {}
+GITHUB_TRIGGER_CONFIG: {}
+GITLAB_TRIGGER_KIND: {}
+LOG_ARCHIVE_LOCATION: us_east
+MAIL_DEFAULT_SENDER: quay@localhost
+MAIL_SERVER: quay-mailpit
+MAIL_PORT: 1025
+MAIL_USE_TLS: false
+PREFERRED_URL_SCHEME: http
+REGISTRY_TITLE: Red Hat Quay
+REGISTRY_TITLE_SHORT: Red Hat Quay
+REPO_MIRROR_SERVER_HOSTNAME: null
+REPO_MIRROR_TLS_VERIFY: false
+SECURITY_SCANNER_V4_ENDPOINT: http://localhost:6000
+SECURITY_SCANNER_V4_NAMESPACE_WHITELIST:
+  - "clairv4-org"
+SECURITY_SCANNER_ISSUER_NAME: security_scanner
+SERVER_HOSTNAME: localhost:8080
+SETUP_COMPLETE: true
+SESSION_TIMEOUT: 2h
+SIGNING_ENGINE: gpg2
+TAG_EXPIRATION_OPTIONS:
+- 0s
+- 1d
+- 1w
+- 2w
+- 4w
+TEAM_RESYNC_STALE_TIME: 60m
+TESTING: false
+USERFILES_LOCATION: us_east
+USERFILES_PATH: userfiles/
+USER_EVENTS_REDIS:
+  host: quay-redis
+  port: 6379
+PULL_METRICS_REDIS:
+  host: quay-redis
+  port: 6379
+  db: 1
+USE_CDN: false
+FEATURE_QUOTA_MANAGEMENT: true
+FEATURE_EDIT_QUOTA: true
+FEATURE_AUTO_PRUNE: true
+FEATURE_IMMUTABLE_TAGS: true
+FEATURE_IMMUTABLE_TAGS_CAN_EXPIRE: false
+DEFAULT_NAMESPACE_AUTOPRUNE_POLICY:
+  method: number_of_tags
+  value: 100
+FEATURE_IMAGE_EXPIRY_TRIGGER: true
+BROWSER_API_CALLS_XHR_ONLY: False
+# CORS_ORIGIN: "https://stage.foo.redhat.com:1337 http://localhost:9000/"
+CORS_ORIGIN:
+  - "https://stage.foo.redhat.com:1337"
+  - "http://localhost:9000"
+FEATURE_UI_V2: True
+FEATURE_USER_METADATA: True
+# Local Keycloak OIDC provider (PKCE disabled initially)
+#SOMEOIDC_LOGIN_CONFIG:
+#  SERVICE_NAME: "Keycloak"
+#  OIDC_SERVER: "http://host.containers.internal:8081/realms/quay/"
+#  CLIENT_ID: "quay-ui"
+#  CLIENT_SECRET: "KbIEbjqeK73iL6zhXZLaVSOCiD5mhB3h" # gitleaks:allow: local Keycloak example client secret
+#  LOGIN_SCOPES: ["openid", "profile", "email"]
+#  DEBUGGING: true
+#  USE_PKCE: true
+#  PKCE_METHOD: "S256"
+#  PUBLIC_CLIENT: true # omit client_secret during token request when client is public
+#RHSSO_LOGIN_CONFIG:
+#  CLIENT_ID: stage.quay.io
+#  CLIENT_SECRET: SECRET
+#  OIDC_SERVER: https://sso.stage.redhat.com/auth/realms/redhat-external/
+#  SERVICE_NAME: Red Hat
+#  SERVICE_ICON: /static/img/RedHat.svg
+#  VERIFIED_EMAIL_CLAIM_NAME: email
+#  PREFERRED_USERNAME_CLAIM_NAME: preferred_username
+#  LOGIN_SCOPES: ['openid']
+DEFAULT_UI: "react"
+
+# Pyroscope continuous profiling. To enable, uncomment and set PYROSCOPE_SERVER_ADDRESS for your setup:
+# - Quay on host (e.g. make run): http://localhost:4040
+# - Quay in Docker on Mac/Windows: http://host.docker.internal:4040
+# - Quay and Pyroscope on same Docker network: http://pyroscope:4040
+# PROFILING_TYPE: Pyroscope
+# PYROSCOPE_SERVER_ADDRESS: http://localhost:4040
+
+FEATURE_SPAM_DETECTION: true
+SPAM_DETECTION_DRY_RUN: false
+SPAM_DETECTION_FAIL_OPEN: false
+SPAM_DETECTION_CLASSIFIER_PATH: /quay-registry/conf/stack/spam-classifier-e2e-v1.json
+SPAM_DETECTION_CLASSIFIER_VERSION: e2e-v1
+SPAM_DETECTION_CLASSIFIER_SHA256: 0861a11b624e0ed790530c8821930254a98f10cdc5c320d12e08a636a4fbc118
+
+# ---------------------------------------------------------------------------
+# OIDC / Keycloak configuration for the containerized Playwright harness.
+# Derived from local-dev/keycloak/keycloak-config.yaml, with the issuer host
+# switched to the compose service name so both Quay and the Playwright
+# container can resolve it.
+# ---------------------------------------------------------------------------
+FEATURE_TEAM_SYNCING: true
+FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP: true
+FEATURE_ROBOT_API_TOKENS: true
+FEATURE_ROBOT_API_TOKEN_EXCHANGE: true
+FEATURE_SPARSE_INDEX: true
+FEATURE_QUOTA_NOTIFICATIONS: true
+FEATURE_SUPERUSER_CONFIGDUMP: true
+# OpenTelemetry tracing to the Jaeger service (default OTLP/HTTP endpoint).
+FEATURE_OTEL_TRACING: true
+OTEL_CONFIG:
+  service_name: quay
+  sample_rate: 1.0
+  endpoint: "http://jaeger:4318/v1/traces"
+# Footer links exercised by the React UI specs (same values as CI).
+FOOTER_LINKS:
+  TERMS_OF_SERVICE_URL: https://quay.acme.org/terms
+  PRIVACY_POLICY_URL: https://quay.acme.org/privacy
+  SECURITY_URL: https://quay.acme.org/security
+  ABOUT_URL: https://quay.acme.org/about
+AUTOPRUNE_TASK_RUN_MINIMUM_INTERVAL_MINUTES: 0
+SSRF_ALLOWED_HOSTS:
+  - playwright
+  - quay-keycloak
+  - host.docker.internal
+
+SOMEOIDC_LOGIN_CONFIG:
+  SERVICE_NAME: "Keycloak"
+  OIDC_SERVER: "http://quay-keycloak:8080/realms/quay/"
+  CLIENT_ID: "quay-ui"
+  # Quay's config validation requires CLIENT_SECRET even for public clients
+  # (PUBLIC_CLIENT: true omits it from token requests; the Keycloak client
+  # has no secret). Dummy value, same as the local-dev template.
+  CLIENT_SECRET: "public-client-no-secret" # gitleaks:allow: dummy value for validation only
+  LOGIN_SCOPES:
+    - "openid"
+    - "profile"
+    - "email"
+  PREFERRED_GROUP_CLAIM_NAME: "groups"
+  SUPERUSER_GROUP: "quay-superusers"
+  GLOBAL_READONLY_SUPERUSER_GROUP: "quay-readonly"
+  DEBUGGING: true
+  USE_PKCE: true
+  PKCE_METHOD: "S256"
+  PUBLIC_CLIENT: true
+  OIDC_ISSUERS:
+    - "http://quay-keycloak:8080/realms/quay"
+  OIDC_AUDIENCES:
+    - "quay-ui"
+    - "api://quay-api"
+  OIDC_ALLOWED_CLIENTS:
+    - "quay-ui"
+    - "quay-obo"
+    - "quay-unknown-aud"

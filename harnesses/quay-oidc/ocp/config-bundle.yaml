@@ -1,0 +1,59 @@
+# Quay config bundle for the operator-installed OIDC harness.
+#
+# This is the harness config/stack/config.yaml reduced to the keys the
+# operator does not manage itself, with the OIDC endpoints rewritten to the
+# in-cluster Keycloak service. The operator provisions and injects DB_URI,
+# Redis, storage, Clair, mail, SERVER_HOSTNAME and TLS; those keys must NOT
+# appear here (the operator validates the bundle strictly).
+#
+# Dev-only fixture credentials (Keycloak admin/admin, dummy client secret):
+# intentional, see the repo AGENTS.md security note.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quay-config-bundle-oidc
+  namespace: quay-oidc-harness
+type: Opaque
+stringData:
+  config.yaml: |
+    AUTHENTICATION_TYPE: OIDC
+    SUPER_USERS:
+      - admin
+      - admin_oidc
+    GLOBAL_READONLY_SUPER_USERS:
+      - quayadmin
+      - readonly
+
+    SOMEOIDC_LOGIN_CONFIG:
+      SERVICE_NAME: "Keycloak"
+      OIDC_SERVER: "http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080/realms/quay/"
+      CLIENT_ID: "quay-ui"
+      # Quay's config validation requires CLIENT_SECRET even for public clients
+      # (PUBLIC_CLIENT: true omits it from token requests; the Keycloak client
+      # has no secret). Dummy value, same as the local-dev template.
+      CLIENT_SECRET: "public-client-no-secret" # gitleaks:allow: dummy value for validation only
+      LOGIN_SCOPES:
+        - "openid"
+        - "profile"
+        - "email"
+      PREFERRED_GROUP_CLAIM_NAME: "groups"
+      SUPERUSER_GROUP: "quay-superusers"
+      GLOBAL_READONLY_SUPERUSER_GROUP: "quay-readonly"
+      DEBUGGING: true
+      USE_PKCE: true
+      PKCE_METHOD: "S256"
+      PUBLIC_CLIENT: true
+      OIDC_ISSUERS:
+        - "http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080/realms/quay"
+      OIDC_AUDIENCES:
+        - "quay-ui"
+        - "api://quay-api"
+
+    SETUP_COMPLETE: true
+    FEATURE_SUPER_USERS: true
+    FEATURE_SUPERUSERS_FULL_ACCESS: true
+    FEATURE_DIRECT_LOGIN: true
+    FEATURE_USER_CREATION: false
+    FEATURE_USERNAME_CONFIRMATION: true
+    FEATURE_TEAM_SYNCING: true
+    FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP: true

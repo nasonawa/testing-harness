@@ -1,0 +1,337 @@
+# Containerized OIDC Playwright harness for Quay — standalone port.
+#
+# Everything runs on one compose network. Quay is configured for OIDC against
+# the Keycloak service; the Playwright runner reaches Quay and Keycloak through
+# loopback forwards (see entrypoint.sh) so the suite keeps using
+# http://localhost:8080 and http://localhost:8081 unchanged.
+#
+# The service set mirrors quay's .github/workflows/ci-web.yaml: Clair
+# (scanner), Jaeger (OTEL tracing), the repository-mirroring worker, Garage S3
+# with two geo-replicated regions, build support (PopenExecutor +
+# quay-builder), and Mailpit. run.py wires up the pieces that need host-side
+# actions (Garage buckets, builder binary, Docker socket).
+#
+# Image source (see README.md):
+#   * Pull mode (default): the quay/repomirror services run ${QUAY_IMAGE}, a
+#     published image. No quay checkout is needed for `up`/`verify`; build
+#     support is degraded (no quay-builder binary) and the @build specs
+#     cannot run.
+#   * Source mode: set QUAY_REPO_ROOT to a quay checkout; run.py then adds
+#     compose.build.yaml, which builds the quay image from that repo and
+#     extracts the builder binary.
+#   The playwright runner always bind-mounts the suite from
+#   ${QUAY_REPO_ROOT}/web, so `test` requires QUAY_REPO_ROOT regardless of
+#   mode.
+#
+# Usage: see ./run.sh (or ./run.py) and README.md.
+
+name: quay-oidc-testing
+
+volumes:
+  quay-db-data:
+  quay-storage:
+  # Persisting Keycloak's database keeps user IDs (the OIDC `sub` claim) stable
+  # across restarts. Without it every `up` re-imports the realm with freshly
+  # generated IDs, which no longer match the external logins Quay stored in
+  # PostgreSQL and breaks every OIDC login. (RCA-20261023-143827 in the quay
+  # repo.) Do not run `clean` casually.
+  keycloak-data:
+  clair-db-data:
+
+services:
+  quay-db:
+    image: docker.io/library/postgres:18
+    user: postgres
+    # Perf: 512MB shared buffers and a higher connection ceiling for parallel
+    # Playwright workers (mirrors clair-db's max_connections). Host has 16
+    # CPUs / 61 GiB RAM; see RCA notes in README.
+    command: ["-c", "shared_buffers=512MB", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_USER: "quay"
+      POSTGRES_PASSWORD: "quay"
+      POSTGRES_DB: "quay"
+    volumes:
+      - "./init/pg_bootstrap.sql:/docker-entrypoint-initdb.d/pg_bootstrap.sql:ro"
+      - "quay-db-data:/var/lib/postgresql"
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quay -d quay"]
+      interval: 10s
+      timeout: 9s
+      retries: 3
+      start_period: 10s
+
+  quay-redis:
+    image: docker.io/library/redis:latest
+    user: nobody
+    # Disable RDB persistence: the default image runs as 'nobody' which cannot
+    # write snapshots to /data, causing writes to be blocked.
+    command: ["redis-server", "--save", ""]
+
+  quay-mailpit:
+    image: docker.io/axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_HOST_PORT:-18025}:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  quay-keycloak:
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.2}
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "admin"
+      KC_HTTP_ENABLED: "true"
+      # Fixed service hostname: discovery issuer and token `iss` are always
+      # http://quay-keycloak:8080/realms/quay, resolvable by both Quay and the
+      # Playwright container.
+      KC_HOSTNAME: "http://quay-keycloak:8080"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    volumes:
+      - "./keycloak/quay-realm.json:/opt/keycloak/data/import/quay-realm.json:ro,z"
+      - "keycloak-data:/opt/keycloak/data"
+    command:
+      - start-dev
+      - --import-realm
+    ports:
+      # For API/admin checks only. A host browser cannot complete the OIDC
+      # redirect because the realm advertises the compose service hostname.
+      - "${KEYCLOAK_HOST_PORT:-18081}:8080"
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Clair v4 in combo mode (indexer + matcher + notifier). It shares Quay's
+  # network namespace so Quay reaches it at localhost:6000 and the notifier can
+  # call back to http://localhost:8080/secscan/notification, exactly as in
+  # the quay repo's docker-compose.yaml / CI.
+  # ---------------------------------------------------------------------------
+  clair-db:
+    image: docker.io/library/postgres:18
+    user: postgres
+    command: ["-c", "max_connections=300"]
+    environment:
+      POSTGRES_USER: "clair"
+      POSTGRES_PASSWORD: "clair"
+      POSTGRES_DB: "clair"
+    volumes:
+      - "clair-db-data:/var/lib/postgresql"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clair -d clair"]
+      interval: 10s
+      timeout: 9s
+      retries: 3
+      start_period: 10s
+
+  clair:
+    image: quay.io/projectquay/clair:4.7.2
+    # Same ownership convention as the Quay service; Clair only needs to read
+    # its mounted configuration.
+    user: "1001:0"
+    volumes:
+      - "./config/clair/config.yaml:/etc/clair/config.yaml:ro,z"
+    environment:
+      CLAIR_CONF: "/etc/clair/config.yaml"
+      CLAIR_MODE: "combo"
+    network_mode: "service:quay"
+    depends_on:
+      clair-db:
+        condition: service_healthy
+      quay:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Jaeger all-in-one. Quay exports OTLP/HTTP spans to the default endpoint
+  # http://jaeger:4318/v1/traces (see OTEL_CONFIG in config.yaml).
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: docker.io/jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_HOST_PORT:-16686}:16686"  # Web UI / query API
+
+  # ---------------------------------------------------------------------------
+  # Garage S3, used for the two-region geo-replication storage config. run.py
+  # runs config/garage/init-garage.sh after the container is healthy to
+  # create the layout, buckets and fixed access key.
+  # ---------------------------------------------------------------------------
+  garage:
+    image: dxflrs/garage:v1.0.1
+    volumes:
+      - "./config/garage/garage.toml:/etc/garage.toml:ro,z"
+    ports:
+      - "${GARAGE_HOST_PORT:-13900}:3900"
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # Pull mode by default. Source mode (QUAY_REPO_ROOT set) is implemented by
+  # compose.build.yaml, which run.py appends to every compose invocation; it
+  # replaces this image with one built from the quay checkout (and likewise
+  # for repomirror below — both must switch together).
+  quay:
+    image: ${QUAY_IMAGE:-quay.io/projectquay/quay:latest}
+    user: "1001:0"
+    # Perf: 4 gunicorn workers (dev uses 1; the suite runs up to 8 parallel
+    # Playwright workers against this instance) and generous CPU/memory from
+    # the 16-CPU / 61 GiB host.
+    cpus: "6"
+    mem_limit: 12g
+    volumes:
+      # Configuration only: the image already contains the Angular and React
+      # static assets. QUAYRUN=/tmp keeps runtime writes off this mount.
+      - "./config/stack:/quay-registry/conf/stack:ro"
+      - "quay-storage:/datastorage"
+      # Build support: the PopenExecutor forks this binary and talks to the
+      # container runtime through DOCKER_HOST. Only present in source mode
+      # (the binary is extracted from the quay checkout); run.py warns when
+      # it is missing.
+      - "${QUAY_REPO_ROOT:-.}/local-dev/quay-builder:/quay-builder/quay-builder:ro"
+      # Mount the runtime socket at the conventional path so the builder's
+      # nested container (if any) can bind /var/run/docker.sock unchanged.
+      # run.py resolves the real path (rootless Docker uses /run/user/<uid>).
+      - "${QUAY_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock"
+    ports:
+      # Manual /config and /health checks from the host.
+      - "${QUAY_HOST_PORT:-18080}:8080"
+    environment:
+      QUAY_VERSION: "oidc-testing"
+      IGNORE_VALIDATION: "true"
+      DEBUGLOG: "true"
+      QUAYRUN: /tmp
+      WORKER_COUNT: "4"
+      WORKER_COUNT_UNSUPPORTED_MINIMUM: "1"
+      QUAY_HOTRELOAD: "false"
+      # Consumed by buildman's PopenExecutor (DOCKER_HOST is read from the
+      # environment, not config.yaml).
+      DOCKER_HOST: "unix:///var/run/docker.sock"
+    depends_on:
+      quay-db:
+        condition: service_healthy
+      quay-redis:
+        condition: service_started
+      quay-keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/instance', timeout=5)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      # Fresh-database migrations can take several minutes on first boot.
+      start_period: 300s
+
+  # Repository mirroring worker. Shares Quay's network namespace so it uses the
+  # same localhost:8080 registry address as in the quay repo's
+  # docker-compose.yaml. Must reference the same image as quay — the
+  # compose.build.yaml override switches both.
+  repomirror:
+    image: ${QUAY_IMAGE:-quay.io/projectquay/quay:latest}
+    user: "1001:0"
+    volumes:
+      - "./config/stack:/quay-registry/conf/stack:ro"
+    environment:
+      QUAY_VERSION: "oidc-testing"
+      IGNORE_VALIDATION: "true"
+      DEBUGLOG: "true"
+      QUAYRUN: /tmp
+      WORKER_COUNT: "1"
+      WORKER_COUNT_UNSUPPORTED_MINIMUM: "1"
+      QUAY_HOTRELOAD: "false"
+    command: ["repomirror-nomigrate"]
+    network_mode: "service:quay"
+    depends_on:
+      quay-db:
+        condition: service_healthy
+      quay-redis:
+        condition: service_started
+      quay:
+        condition: service_started
+
+  # Profile-gated so a bare `docker compose up` in pull mode never builds the
+  # runner; run.py passes --profile test on every invocation. The quay repo is
+  # attached as the named BuildKit context `quayrepo` (used by
+  # Containerfile.playwright's COPY --from=quayrepo lines), so the build
+  # context stays this harness directory.
+  playwright:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Containerfile.playwright
+      additional_contexts:
+        quayrepo: "${QUAY_REPO_ROOT:-.}"
+    image: localhost/quay-oidc-playwright:latest
+    # run.py sets this to 0:0 under rootless engines (container root is the
+    # host user there) and to the real uid:gid under rootful ones.
+    user: "${DOCKER_USER:-0:0}"
+    init: true
+    # 2 GB of /dev/shm: up to 8 parallel Chromium instances (CI parity uses
+    # 4 workers / 1 GB on smaller runners).
+    shm_size: "2gb"
+    cpus: "8"
+    depends_on:
+      quay:
+        condition: service_healthy
+      quay-keycloak:
+        condition: service_healthy
+    volumes:
+      # Run the working-tree suite (no image rebuild needed for spec changes).
+      - "${QUAY_REPO_ROOT:-.}/web/playwright:/app/playwright:ro"
+      - "${QUAY_REPO_ROOT:-.}/web/playwright.config.ts:/app/playwright.config.ts:ro"
+      - "${QUAY_REPO_ROOT:-.}/web/tsconfig.json:/app/tsconfig.json:ro"
+      # Keep the harness scripts live as well, so summarize/entrypoint fixes do
+      # not require an image rebuild (the image bakes copies at build time).
+      - "./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro"
+      - "./summarize.mjs:/usr/local/bin/summarize.mjs:ro"
+      - "./config-proxy.mjs:/usr/local/bin/config-proxy.mjs:ro"
+      - "./warmup-oidc.mjs:/app/warmup-oidc.mjs:ro"
+      # Reports are written to the host for later analysis.
+      # run.py sets REPORT_DIR to reports/runs/<timestamp>/ for each test run,
+      # so past runs stay archived; reports/latest symlinks to the newest one.
+      - "${REPORT_DIR:-./reports/latest}/playwright-report:/app/playwright-report"
+      - "${REPORT_DIR:-./reports/latest}/test-results:/app/test-results"
+      - "${REPORT_DIR:-./reports/latest}/summary:/app/summary"
+    environment:
+      HOME: /tmp
+      PLAYWRIGHT_BASE_URL: "http://localhost:8080"
+      REACT_QUAY_APP_API_URL: "http://localhost:8080"
+      KEYCLOAK_HOST: "http://localhost:8081"
+      # /config injection (config-proxy.mjs): mirrors SOMEOIDC_LOGIN_CONFIG
+      # from config/stack/config.yaml so the bearer-token and multi-issuer
+      # specs can discover the OIDC provider, which Quay's /config never
+      # exposes (RCA-20261023-143827 §6.5, quay repo).
+      INJECT_LOGIN_SERVICE_NAME: "SOMEOIDC_LOGIN_CONFIG"
+      INJECT_OIDC_SERVER: "http://quay-keycloak:8080/realms/quay/"
+      INJECT_OIDC_CLIENT_ID: "quay-ui"
+      INJECT_OIDC_ISSUERS: "http://quay-keycloak:8080/realms/quay"
+      INJECT_OIDC_AUDIENCES: "quay-ui,api://quay-api"
+      # Quay reaches the webhook receiver by service name (requires
+      # `docker compose run --use-aliases`, which run.py uses).
+      WEBHOOK_HOST: "playwright"
+      MAILPIT_API_URL: "http://quay-mailpit:8025/api/v1"
+      # Geo-replicated S3 (Garage) and tracing (Jaeger) use service DNS; the
+      # runner is on the compose network, so no /etc/hosts entries are needed.
+      S3_ENDPOINT: "http://garage:3900"
+      S3_REGION: "us-east-1"
+      S3_BUCKETS: "quay-us-east,quay-eu-west"
+      S3_STORAGE_PATH: "datastorage/registry"
+      AWS_ACCESS_KEY_ID: "GKe2e0123456789abcdef01234"
+      AWS_SECRET_ACCESS_KEY: "e2e0123456789abcdef0123456789abcdef0123456789abcdef01234567890ab"
+      JAEGER_QUERY_URL: "http://jaeger:16686"
+      OPENSHIFT_CI: "1"
+      CI: "1"
+      PLAYWRIGHT_SKIP_WEBSERVER: "1"
+    command:
+      - npx
+      - playwright
+      - test
+      - --grep-invert
+      - "@upgrade-seed|@upgrade-verify"

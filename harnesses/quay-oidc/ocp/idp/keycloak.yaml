@@ -1,0 +1,82 @@
+# Keycloak (identity provider for the OIDC harness) on OpenShift.
+#
+# The realm is NOT duplicated here: run.py materializes
+# keycloak/quay-realm.json into ocp/generated/quay-oidc-realm.yaml on every
+# render/apply, keeping that file the single source of truth.
+#
+# The realm's browser redirect URIs (localhost:8080/8081) are compose-only
+# and irrelevant here: the OCP verify path is API-only (no browser), and the
+# issuer must be the in-cluster service URL so both Quay and the verify Job
+# resolve it — hence KC_HOSTNAME below.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay-keycloak
+  namespace: quay-oidc-harness
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quay-keycloak
+  namespace: quay-oidc-harness
+  labels:
+    app: quay-keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quay-keycloak
+  template:
+    metadata:
+      labels:
+        app: quay-keycloak
+    spec:
+      serviceAccountName: quay-keycloak
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.2
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: admin
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            # Fixed in-cluster service hostname: discovery issuer and token
+            # `iss` are always http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080/realms/quay.
+            - name: KC_HOSTNAME
+              value: http://quay-keycloak.quay-oidc-harness.svc.cluster.local:8080
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "true"
+          args: ["start-dev", "--import-realm"]
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /realms/quay/.well-known/openid-configuration
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: realm
+          configMap:
+            name: quay-oidc-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quay-keycloak
+  namespace: quay-oidc-harness
+spec:
+  selector:
+    app: quay-keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

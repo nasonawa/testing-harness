@@ -1,0 +1,24 @@
+# Source-build override for the OIDC harness.
+#
+# Applied automatically by run.py (and ./run.sh) whenever QUAY_REPO_ROOT is
+# set: every compose invocation gets `-f compose.yaml -f compose.build.yaml`.
+# Equivalent manual invocation:
+#
+#   QUAY_REPO_ROOT=/path/to/quay \
+#     docker compose -f compose.yaml -f compose.build.yaml build quay
+#
+# IMPORTANT: quay and repomirror must switch images TOGETHER — if only quay
+# were overridden, repomirror would silently run the published image against
+# a locally built database schema. Compose merge semantics replace the base
+# `image:` of both services with QUAY_BUILT_IMAGE (deliberately a different
+# default tag from QUAY_IMAGE so a local build never shadows the published
+# reference).
+services:
+  quay:
+    build:
+      context: ${QUAY_REPO_ROOT}
+      dockerfile: Dockerfile
+      target: final
+    image: ${QUAY_BUILT_IMAGE:-localhost/quay-oidc-testing-quay:latest}
+  repomirror:
+    image: ${QUAY_BUILT_IMAGE:-localhost/quay-oidc-testing-quay:latest}

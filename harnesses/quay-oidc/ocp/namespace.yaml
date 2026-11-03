@@ -1,0 +1,9 @@
+# Namespace for the LDAP harness OpenShift variant. Everything the harness
+# deploys on the cluster lives here and is removed by `./run.sh ocp delete`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quay-oidc-harness
+  labels:
+    app.kubernetes.io/name: quay-oidc-harness
+    app.kubernetes.io/part-of: testing-harness

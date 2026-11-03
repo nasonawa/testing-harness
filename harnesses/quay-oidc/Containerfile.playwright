@@ -1,0 +1,113 @@
+# Ubuntu-based Playwright runner for the OIDC test harness.
+#
+# Playwright/Chromium is unreliable on UBI/RHEL, so this deliberately uses
+# Ubuntu (unlike the quay repo's web/Containerfile.playwright, which is the
+# OpenShift CI image). It mirrors that file's tooling: the Playwright version
+# resolved by the checkout's web/package-lock.json, Chromium + OS deps, and
+# the registry CLIs used by the @container / cli-interop specs.
+#
+# The build context is this harness directory; the quay checkout is attached
+# as the named BuildKit context `quayrepo` (compose additional_contexts), so
+# everything from the quay repo is COPY'd with --from=quayrepo. Rebuild this
+# image when the checkout's Playwright pin moves.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    HOME=/tmp \
+    npm_config_cache=/tmp/.npm \
+    OPENSHIFT_CI=1 \
+    CI=1 \
+    PLAYWRIGHT_SKIP_WEBSERVER=1
+
+USER root
+
+# Base tooling. socat provides the loopback forwards used by entrypoint.sh;
+# skopeo enables the @container specs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      gnupg \
+      git \
+      socat \
+      jq \
+      xz-utils \
+      gzip \
+      tar \
+      unzip \
+      skopeo \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# AWS CLI v2, required by the object-storage / geo-replication specs
+# (utils/s3.ts shells out to `aws s3api`). Ubuntu 24.04 does not ship the
+# package in its default repositories, so use the official static installer.
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64) AWS_ARCH=x86_64 ;; \
+      aarch64) AWS_ARCH=aarch64 ;; \
+      *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip; \
+    unzip -q /tmp/awscliv2.zip -d /tmp; \
+    /tmp/aws/install; \
+    rm -rf /tmp/aws /tmp/awscliv2.zip; \
+    aws --version
+
+# Install the Playwright version pinned by the lockfile (same approach as
+# web/Containerfile.playwright) plus Chromium and its OS dependencies. The
+# suite only needs @playwright/test; installing the whole React app is
+# unnecessary and much slower.
+COPY --from=quayrepo web/package-lock.json /tmp/package-lock.json
+RUN PW_VERSION=$(node -p "require('/tmp/package-lock.json').packages['node_modules/@playwright/test'].version") \
+    && npm init -y > /dev/null 2>&1 \
+    && npm install --no-package-lock "@playwright/test@${PW_VERSION}" \
+    && npx playwright install --with-deps chromium \
+    && chmod -R a+rX /ms-playwright \
+    && rm -rf /tmp/package-lock.json /tmp/.npm /var/lib/apt/lists/*
+
+# Registry CLIs for the @container / cli-interop Playwright specs: crane,
+# regctl, oras, and cosign. Versions match the quay repo's
+# .github/workflows/ci-web.yaml and web/Containerfile.playwright.
+#
+# They are NOT downloaded here. `./fetch-tools.sh` (run automatically by
+# `./run.sh build`) fetches them from GitHub releases into ./bin with retries
+# and stall detection, then verifies each binary runs. The image only copies
+# those local files, so the build is fast and does not fail or hang when a
+# GitHub release asset is slow or unavailable.
+COPY bin/ /tmp/quay-tools/
+RUN set -eux; \
+    for tool in crane regctl oras cosign; do \
+      test -x "/tmp/quay-tools/$tool" || { \
+        echo "ERROR: /tmp/quay-tools/$tool is missing; run ./fetch-tools.sh" >&2; \
+        exit 1; \
+      }; \
+    done; \
+    install -m 0755 \
+      /tmp/quay-tools/crane \
+      /tmp/quay-tools/regctl \
+      /tmp/quay-tools/oras \
+      /tmp/quay-tools/cosign \
+      /usr/local/bin/; \
+    rm -rf /tmp/quay-tools; \
+    crane version; \
+    regctl version; \
+    oras version; \
+    cosign version
+
+# Bake the suite for standalone use. compose.yaml bind-mounts the working tree
+# over these paths so spec edits do not require an image rebuild.
+COPY --from=quayrepo web/playwright.config.ts ./
+COPY --from=quayrepo web/playwright/ ./playwright/
+COPY --from=quayrepo web/tsconfig.json ./
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY summarize.mjs /usr/local/bin/summarize.mjs
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Runs as the host UID/GID via compose (`user:`), so no USER directive.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["npx", "playwright", "test", "--grep-invert", "@upgrade-seed|@upgrade-verify"]

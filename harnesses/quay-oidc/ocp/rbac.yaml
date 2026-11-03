@@ -1,0 +1,36 @@
+# Least-privilege RBAC for the verify Job: it enumerates Quay's pods and
+# reads their logs (the PROJQUAY-13372 redaction checks scan the same
+# gunicorn stdout stream the ticket's leak came from). Read-only, namespaced,
+# no Secrets access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay-harness-verify
+  namespace: quay-oidc-harness
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: quay-harness-verify
+  namespace: quay-oidc-harness
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: quay-harness-verify
+  namespace: quay-oidc-harness
+subjects:
+  - kind: ServiceAccount
+    name: quay-harness-verify
+    namespace: quay-oidc-harness
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: quay-harness-verify
