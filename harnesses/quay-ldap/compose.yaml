@@ -1,0 +1,190 @@
+# Containerized LDAP harness for Quay (PROJQUAY-13372) — standalone port.
+#
+# Everything runs on one compose network: Quay is configured for LDAP
+# authentication against a 389 Directory Server seeded with users whose
+# userPassword values are plaintext (like local-dev) or a PBKDF2 hash (like
+# the PROJQUAY-13372 ticket log). USERS_DEBUG=1 turns on the python-ldap
+# trace (trace_level 2 through _LDAPTraceRedactor), and DEBUGLOG=true raises
+# the Python root logger to DEBUG so the "DN ... found:" line fires; both go
+# to the quay container's stdout, which `./run.sh verify` scans for leaks.
+#
+# Lean sibling of harnesses/quay-oidc: no Clair, Jaeger, Garage, repomirror
+# or build support. The Playwright runner runs the @auth:LDAP specs plus
+# anything else you pass to `./run.sh test`.
+#
+# Image source (see README.md):
+#   * Pull mode (default): the quay service runs ${QUAY_IMAGE}, a published
+#     image. No quay checkout is needed for `up`/`verify`.
+#   * Source mode: set QUAY_REPO_ROOT to a quay checkout; run.py then adds
+#     compose.build.yaml, which builds the quay image from that repo.
+#   The playwright runner always bind-mounts the suite from
+#   ${QUAY_REPO_ROOT}/web, so `test` requires QUAY_REPO_ROOT regardless of
+#   mode.
+#
+# Usage: see ./run.sh (or ./run.py) and README.md.
+
+name: quay-ldap-testing
+
+volumes:
+  quay-db-data:
+  quay-storage:
+
+services:
+  quay-db:
+    image: docker.io/library/postgres:18
+    user: postgres
+    command: ["-c", "shared_buffers=512MB", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_USER: "quay"
+      POSTGRES_PASSWORD: "quay"
+      POSTGRES_DB: "quay"
+    volumes:
+      - "./init/pg_bootstrap.sql:/docker-entrypoint-initdb.d/pg_bootstrap.sql:ro"
+      - "quay-db-data:/var/lib/postgresql"
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quay -d quay"]
+      interval: 10s
+      timeout: 9s
+      retries: 3
+      start_period: 10s
+
+  quay-redis:
+    image: docker.io/library/redis:latest
+    user: nobody
+    # Disable RDB persistence: the default image runs as 'nobody' which cannot
+    # write snapshots to /data, causing writes to be blocked.
+    command: ["redis-server", "--save", ""]
+
+  quay-mailpit:
+    image: docker.io/axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_HOST_PORT:-18026}:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  # ---------------------------------------------------------------------------
+  # 389 Directory Server with the Quay test users. base.ldif is imported once
+  # by init-389ds.sh on first boot (backend creation takes ~40s); the
+  # healthcheck only passes once dc=example,dc=org is searchable, i.e. after
+  # the LDIF import.
+  # ---------------------------------------------------------------------------
+  quay-ldap:
+    image: docker.io/389ds/dirsrv:latest
+    environment:
+      DS_DM_PASSWORD: "admin"
+    volumes:
+      - "./ldap/base.ldif:/data/ldif/base.ldif:ro,z"
+      - "./ldap/init-389ds.sh:/data/init-389ds.sh:ro,z"
+    ports:
+      # Host-side ldapsearch checks only; Quay uses the service hostname.
+      - "${LDAP_HOST_PORT:-13389}:3389"
+    command: >
+      bash -c "
+      /usr/lib/dirsrv/dscontainer -r &
+      sleep 10 &&
+      bash /data/init-389ds.sh &&
+      wait
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost:3389 -b dc=example,dc=org -s base >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 9s
+      retries: 12
+      start_period: 60s
+
+  # Pull mode by default. Source mode (QUAY_REPO_ROOT set) is implemented by
+  # compose.build.yaml, which run.py appends to every compose invocation; it
+  # replaces this image with one built from the quay checkout.
+  quay:
+    image: ${QUAY_IMAGE:-quay.io/projectquay/quay:latest}
+    user: "1001:0"
+    cpus: "4"
+    mem_limit: 8g
+    volumes:
+      # Configuration only: the image already contains the Angular and React
+      # static assets. QUAYRUN=/tmp keeps runtime writes off this mount.
+      - "./config/stack:/quay-registry/conf/stack:ro"
+      - "quay-storage:/datastorage"
+    ports:
+      # Manual /config, /v2 and /health checks from the host; verify.py logs
+      # in through this port.
+      - "${QUAY_HOST_PORT:-18090}:8080"
+    environment:
+      QUAY_VERSION: "ldap-testing"
+      IGNORE_VALIDATION: "true"
+      DEBUGLOG: "true"
+      # PROJQUAY-13372: the python-ldap trace (trace_level 2) is written to
+      # stdout through _LDAPTraceRedactor. This is the exact configuration
+      # from the ticket.
+      USERS_DEBUG: "1"
+      QUAYRUN: /tmp
+      WORKER_COUNT: "2"
+      WORKER_COUNT_UNSUPPORTED_MINIMUM: "1"
+      QUAY_HOTRELOAD: "false"
+    depends_on:
+      quay-db:
+        condition: service_healthy
+      quay-redis:
+        condition: service_started
+      quay-ldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/instance', timeout=5)\""]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      # Fresh-database migrations can take several minutes on first boot.
+      start_period: 300s
+
+  # Profile-gated so a bare `docker compose up` in pull mode never builds the
+  # runner; run.py passes --profile test on every invocation. The quay repo is
+  # attached as the named BuildKit context `quayrepo` (used by
+  # Containerfile.playwright's COPY --from=quayrepo lines), so the build
+  # context stays this harness directory.
+  playwright:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Containerfile.playwright
+      additional_contexts:
+        quayrepo: "${QUAY_REPO_ROOT:-.}"
+    image: localhost/quay-ldap-playwright:latest
+    # run.py sets this to 0:0 under rootless engines (container root is the
+    # host user there) and to the real uid:gid under rootful ones.
+    user: "${DOCKER_USER:-0:0}"
+    init: true
+    shm_size: "2gb"
+    cpus: "4"
+    depends_on:
+      quay:
+        condition: service_healthy
+    volumes:
+      # Run the working-tree suite (no image rebuild needed for spec changes).
+      - "${QUAY_REPO_ROOT:-.}/web/playwright:/app/playwright:ro"
+      - "${QUAY_REPO_ROOT:-.}/web/playwright.config.ts:/app/playwright.config.ts:ro"
+      - "${QUAY_REPO_ROOT:-.}/web/tsconfig.json:/app/tsconfig.json:ro"
+      # Keep the harness entrypoint live without an image rebuild.
+      - "./entrypoint.sh:/usr/local/bin/entrypoint.sh:ro"
+      # Reports are written to the host for later analysis. run.py sets
+      # REPORT_DIR to reports/runs/<timestamp>/ for each test run.
+      - "${REPORT_DIR:-./reports/latest}/playwright-report:/app/playwright-report"
+      - "${REPORT_DIR:-./reports/latest}/test-results:/app/test-results"
+    environment:
+      HOME: /tmp
+      PLAYWRIGHT_BASE_URL: "http://localhost:8080"
+      REACT_QUAY_APP_API_URL: "http://localhost:8080"
+      # Quay reaches the webhook receiver by service name (requires
+      # `docker compose run --use-aliases`, which run.py uses).
+      WEBHOOK_HOST: "playwright"
+      MAILPIT_API_URL: "http://quay-mailpit:8025/api/v1"
+      OPENSHIFT_CI: "1"
+      CI: "1"
+      PLAYWRIGHT_SKIP_WEBSERVER: "1"
+    command:
+      - npx
+      - playwright
+      - test
+      - --grep
+      - "@auth:LDAP"

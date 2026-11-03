@@ -1,0 +1,88 @@
+# 389 Directory Server (identity provider for the LDAP harness) on OpenShift.
+#
+# The LDIF and the init script are NOT duplicated here: run.py materializes
+# them from ldap/base.ldif and ldap/init-389ds.sh into
+# ocp/generated/quay-ldap-ldif.yaml on every render/apply, keeping those
+# files the single source of truth.
+#
+# The init script hardcodes /data/ldif/base.ldif and an LDAPI socket under
+# /data/run, so the ConfigMap is mounted at /data/ldif (script visible as
+# /data/ldif/init-389ds.sh) and an emptyDir gives /data writable scratch.
+#
+# SCC note (live validation pending): the 389ds image may expect a specific
+# or root UID. If the pod crash-loops with permission errors under the
+# namespace's restricted SCC, grant anyuid to the service account:
+#   oc adm policy add-scc-to-user anyuid -z quay-ldap-idp -n quay-ldap-harness
+# (requires cluster-admin) — or switch to a UIDs-agnostic LDAP image.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay-ldap-idp
+  namespace: quay-ldap-harness
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quay-ldap
+  namespace: quay-ldap-harness
+  labels:
+    app: quay-ldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quay-ldap
+  template:
+    metadata:
+      labels:
+        app: quay-ldap
+    spec:
+      serviceAccountName: quay-ldap-idp
+      containers:
+        - name: dirsrv
+          image: docker.io/389ds/dirsrv:latest
+          env:
+            - name: DS_DM_PASSWORD
+              value: admin
+          command:
+            - bash
+            - -c
+            - |
+              /usr/lib/dirsrv/dscontainer -r &
+              sleep 10 &&
+              bash /data/ldif/init-389ds.sh &&
+              wait
+          volumeMounts:
+            - name: ldif
+              mountPath: /data/ldif
+              readOnly: true
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - ldapsearch -x -H ldap://localhost:3389 -b dc=example,dc=org -s base >/dev/null 2>&1
+            initialDelaySeconds: 40
+            periodSeconds: 10
+            failureThreshold: 12
+      volumes:
+        - name: ldif
+          configMap:
+            name: quay-ldap-ldif
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quay-ldap
+  namespace: quay-ldap-harness
+spec:
+  selector:
+    app: quay-ldap
+  ports:
+    - name: ldap
+      port: 3389
+      targetPort: 3389

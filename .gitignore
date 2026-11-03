@@ -1,0 +1,26 @@
+# Local configuration and generated state — never commit these.
+
+# Per-harness local env (copy from .env.example)
+.env
+
+# Runtime report archives (reports/latest symlink + runs)
+harnesses/*/reports/
+
+# Fetched binaries (crane/regctl/oras/cosign via fetch-tools.sh)
+harnesses/*/bin/
+
+# run.py-generated OpenShift manifests (materialized from single sources)
+harnesses/*/ocp/generated/
+
+# User-local compose overrides (auto-included by run.py when present)
+harnesses/*/compose.override.yaml
+
+# Python
+__pycache__/
+*.pyc
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

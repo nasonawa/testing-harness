@@ -1,0 +1,20 @@
+# Source-build override for the LDAP harness.
+#
+# Applied automatically by run.py (and ./run.sh) whenever QUAY_REPO_ROOT is
+# set: every compose invocation gets `-f compose.yaml -f compose.build.yaml`.
+# Equivalent manual invocation:
+#
+#   QUAY_REPO_ROOT=/path/to/quay \
+#     docker compose -f compose.yaml -f compose.build.yaml build quay
+#
+# Compose merge semantics replace the base `image:` for the quay service, so
+# source mode builds and runs a locally built image tagged QUAY_BUILT_IMAGE —
+# deliberately a different default tag from QUAY_IMAGE so a local build never
+# shadows the published reference.
+services:
+  quay:
+    build:
+      context: ${QUAY_REPO_ROOT}
+      dockerfile: Dockerfile
+      target: final
+    image: ${QUAY_BUILT_IMAGE:-localhost/quay-ldap-testing-quay:latest}

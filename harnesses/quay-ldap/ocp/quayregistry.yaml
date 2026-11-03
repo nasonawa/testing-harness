@@ -1,0 +1,31 @@
+# QuayRegistry deployed by the quay-operator (install it via OLM first:
+# https://docs.projectquay.io/deploy_quay_on_openshift_op_tng.html).
+#
+# postgres, redis, object storage (RHOCS/default storage class) and the Route
+# are operator-managed. Clair and the repo mirror are disabled: the LDAP
+# harness does not exercise security scanning or mirroring.
+#
+# `./run.sh ocp apply` waits for the Available condition (~10-15 min on a
+# fresh namespace: the operator rolls out every managed component).
+apiVersion: operators.coreos.com/v1
+kind: QuayRegistry
+metadata:
+  name: quay
+  namespace: quay-ldap-harness
+spec:
+  configBundleSecretRef: quay-config-bundle-ldap
+  components:
+    - kind: postgres
+      managed: true
+    - kind: redis
+      managed: true
+    - kind: storage
+      managed: true
+    - kind: route
+      managed: true
+    - kind: clair
+      managed: false
+    - kind: mirror
+      managed: false
+    - kind: horizontalpodautoscaler
+      managed: false

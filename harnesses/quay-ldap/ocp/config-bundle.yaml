@@ -1,0 +1,54 @@
+# Quay config bundle for the operator-installed LDAP harness.
+#
+# This is the harness config/stack/config.yaml reduced to the keys the
+# operator does not manage itself. The operator provisions and injects
+# DB_URI, Redis, storage, Clair, mail, SERVER_HOSTNAME and TLS; those keys
+# must NOT appear here (the operator validates the bundle strictly — there
+# is no IGNORE_VALIDATION escape hatch on OCP).
+#
+# Dev-only fixture credentials (Directory Manager "admin"): intentional, see
+# the repo AGENTS.md security note.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quay-config-bundle-ldap
+  namespace: quay-ldap-harness
+type: Opaque
+stringData:
+  config.yaml: |
+    # LDAP authentication against the in-cluster 389 DS Deployment.
+    AUTHENTICATION_TYPE: LDAP
+    LDAP_URI: ldap://quay-ldap.quay-ldap-harness.svc.cluster.local:3389
+    LDAP_ADMIN_DN: cn=Directory Manager
+    LDAP_ADMIN_PASSWD: admin
+    LDAP_BASE_DN:
+      - dc=example
+      - dc=org
+    LDAP_USER_RDN:
+      - ou=users
+    LDAP_UID_ATTR: uid
+    LDAP_EMAIL_ATTR: mail
+    LDAP_MEMBEROF_ATTR: quayMemberOf
+    LDAP_ALLOW_INSECURE_FALLBACK: true
+
+    SUPER_USERS:
+      - admin
+      - user1
+      - quayadmin
+      - admin_ldap
+    GLOBAL_READONLY_SUPER_USERS:
+      - quayadmin
+      - readonly
+      - readonly_ldap
+
+    SETUP_COMPLETE: true
+    FEATURE_SUPER_USERS: true
+    FEATURE_SUPERUSERS_FULL_ACCESS: true
+    FEATURE_DIRECT_LOGIN: true
+    FEATURE_USER_CREATION: false
+    FEATURE_USERNAME_CONFIRMATION: true
+    FEATURE_TEAM_SYNCING: true
+    FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP: true
+    FEATURE_REPO_MIRROR: true
+    FEATURE_ORG_MIRROR: true
+    TEAM_RESYNC_STALE_TIME: 60m
